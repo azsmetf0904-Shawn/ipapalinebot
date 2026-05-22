@@ -1,1 +1,49 @@
+name: 定時公告排程
 
+on:
+  schedule:
+    - cron: "0 1 * * *"
+    - cron: "0 4 * * 1"
+    - cron: "30 9 * * *"
+  workflow_dispatch:
+    inputs:
+      message:
+        description: 公告內容
+        required: true
+        default: 手動觸發的公告
+
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 每天早上 09:00 公告
+        if: github.event.schedule == '0 1 * * *'
+        run: |
+          curl -s -X POST https://api.line.me/v2/bot/message/broadcast \
+            -H "Authorization: Bearer ${{ secrets.LINE_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{"messages":[{"type":"text","text":"📢 早安！今天也請準時上工 ☀️"}]}'
+
+      - name: 每週一 12:00 公告
+        if: github.event.schedule == '0 4 * * 1'
+        run: |
+          curl -s -X POST https://api.line.me/v2/bot/message/broadcast \
+            -H "Authorization: Bearer ${{ secrets.LINE_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{"messages":[{"type":"text","text":"📢 新的一週開始了！本週目標請確認 💪"}]}'
+
+      - name: 每天 17:30 公告
+        if: github.event.schedule == '30 9 * * *'
+        run: |
+          curl -s -X POST https://api.line.me/v2/bot/message/broadcast \
+            -H "Authorization: Bearer ${{ secrets.LINE_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{"messages":[{"type":"text","text":"📢 今天辛苦了！記得準時下班 🏠"}]}'
+
+      - name: 手動觸發公告
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          curl -s -X POST https://api.line.me/v2/bot/message/broadcast \
+            -H "Authorization: Bearer ${{ secrets.LINE_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"messages\":[{\"type\":\"text\",\"text\":\"📢 ${{ github.event.inputs.message }}\"}]}"
