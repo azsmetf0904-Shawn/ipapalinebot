@@ -290,8 +290,8 @@ tr:hover td{background:#fafffe}
 </div>
 
 <script>
-const pass = prompt('請輸入管理密碼：');
-if (!pass) { document.body.innerHTML='<p style="padding:40px;color:#999">已取消</p>'; }
+const adminPass = prompt('請輸入管理密碼：');
+if (!adminPass) { document.body.innerHTML='<p style="padding:40px;color:#999">已取消</p>'; }
 
 let categories = [];
 
@@ -302,7 +302,7 @@ function showAlert(msg, type='success') {
 }
 
 async function api(path, method='GET', body=null) {
-  const opts = { method, headers: {'Content-Type':'application/json','X-Admin-Pass':pass} };
+  const opts = { method, headers: {'Content-Type':'application/json','X-Admin-Pass':adminPass} };
   if (body) opts.body = JSON.stringify(body);
   const r = await fetch(path, opts);
   return r.json();
