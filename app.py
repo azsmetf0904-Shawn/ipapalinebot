@@ -123,6 +123,7 @@ def check_and_send_reminders():
     conn.commit()
     conn.close()
 
+init_db()
 scheduler.add_job(check_and_send_reminders, "cron", hour=8, minute=0, id="daily_reminder")
 
 # ── 管理網頁 ──
@@ -454,6 +455,12 @@ def handle_leave(event):
         conn.execute("DELETE FROM groups WHERE group_id=?", (event["source"]["groupId"],))
         conn.commit()
         conn.close()
+
+
+@app.route("/init-db")
+def init_db_route():
+    init_db()
+    return "DB initialized OK"
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
