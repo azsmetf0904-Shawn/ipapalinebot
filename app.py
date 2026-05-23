@@ -204,7 +204,20 @@ td{padding:10px 12px;border-bottom:1px solid #f0f0f0;vertical-align:middle}
 <body>
 <div class="header">
   <span style="font-size:28px">📢</span>
-  <div><h1>ipapa 課程公告管理</h1><p id="grp-count">載入中...</p></div>
+  <div style="flex:1"><h1>ipapa 課程公告管理</h1><p id="grp-count">載入中...</p></div><button onclick="doLogout()" style="background:rgba(255,255,255,.2);border:none;color:#fff;padding:6px 14px;border-radius:8px;cursor:pointer;font-size:13px">登出</button>
+</div>
+
+<!-- 登入畫面 -->
+<div id="login-screen" style="display:none;position:fixed;inset:0;background:#f0f4f8;z-index:9999;align-items:center;justify-content:center;flex-direction:column;gap:16px">
+  <div style="background:#fff;border-radius:16px;padding:40px;box-shadow:0 4px 20px rgba(0,0,0,.1);text-align:center;width:320px">
+    <div style="font-size:48px;margin-bottom:12px">📢</div>
+    <h2 style="color:#06C755;margin-bottom:4px">ipapa 管理後台</h2>
+    <p style="color:#999;font-size:13px;margin-bottom:24px">請輸入管理密碼</p>
+    <input id="pw-input" type="password" placeholder="管理密碼" style="width:100%;margin-bottom:12px;text-align:center;font-size:16px"
+      onkeydown="if(event.key==='Enter')doLogin()">
+    <p id="login-err" style="color:#e53935;font-size:13px;margin-bottom:8px;min-height:18px"></p>
+    <button class="btn btn-green" style="width:100%" onclick="doLogin()">登入</button>
+  </div>
 </div>
 <div class="container">
 <div id="alert-box"></div>
@@ -274,10 +287,34 @@ td{padding:10px 12px;border-bottom:1px solid #f0f0f0;vertical-align:middle}
 let pw='', categories=[], selectedCatId=null;
 
 function init(){
-  pw=prompt('請輸入管理密碼：')||'';
-  if(!pw){document.body.innerHTML='<p style="padding:40px;color:#999">已取消</p>';return;}
-  loadAll();
-  setupPreview();
+  // 從 localStorage 讀取密碼
+  pw = localStorage.getItem('admin_pw') || '';
+  if(pw){ loadAll(); setupPreview(); document.getElementById('login-screen').style.display='none'; }
+  else { document.getElementById('login-screen').style.display='flex'; }
+}
+
+function doLogin(){
+  const input = document.getElementById('pw-input').value.trim();
+  if(!input){ return; }
+  pw = input;
+  // 測試密碼
+  api('/admin/groups').then(data => {
+    if(data.error === 'unauthorized'){
+      document.getElementById('login-err').textContent = '密碼錯誤，請再試一次';
+      pw = '';
+    } else {
+      localStorage.setItem('admin_pw', pw);
+      document.getElementById('login-screen').style.display='none';
+      loadAll();
+      setupPreview();
+    }
+  });
+}
+
+function doLogout(){
+  localStorage.removeItem('admin_pw');
+  pw = '';
+  location.reload();
 }
 
 function toggle(id){
