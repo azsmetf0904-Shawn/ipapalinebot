@@ -418,7 +418,11 @@ async function loadCourses(){
         <td>${c.location||'-'}</td>
         <td><span class="sub">${c.remind_count}次/已發${c.sent_count||0}</span></td>
         <td>${badge}</td>
-        <td><button class="btn btn-red" onclick="deleteCourse(${c.id})">刪除</button></td>
+        <td style="display:flex;gap:4px;flex-wrap:wrap">
+          <button class="btn btn-gray" onclick="openEdit(${JSON.stringify(c).split('&quot;').join('&amp;quot;').split('"').join('&quot;')})">編輯</button>
+          <button class="btn btn-blue" style="padding:6px 10px;font-size:12px" onclick="sendCourseNow(${c.id},'${c.title.replace(/'/g,\"\\\\'\")}')">立即發送</button>
+          <button class="btn btn-red" onclick="deleteCourse(${c.id})">刪除</button>
+        </td>
       </tr>`;
     }
     html+='</table></div></div>';
@@ -468,8 +472,125 @@ async function sendManual(){
   document.getElementById('manual-img-preview').style.display='none';
 }
 
+
+
+async function sendCourseNow(id, title) {
+  if (!confirm(`立即發送「${title}」的課程提醒到所有群組？`)) return;
+  const data = await api(`/admin/courses/${id}/send-now`, 'POST');
+  if (data.error) { showAlert('發送失敗：' + data.error, 'err'); return; }
+  showAlert(`✅ 已發送「${title}」到 ${data.ok}/${data.total} 個群組`);
+}
+
+let editCatId = null;
+
+function openEdit(c) {
+  if (typeof c === 'string') c = JSON.parse(c);
+  editCatId = c.category_id || null;
+  document.getElementById('e-id').value = c.id;
+  document.getElementById('e-title').value = c.title;
+  document.getElementById('e-date').value = c.course_date;
+  document.getElementById('e-time').value = c.course_time;
+  document.getElementById('e-loc').value = c.location || '';
+  document.getElementById('e-desc').value = c.description || '';
+  document.getElementById('e-before').value = c.remind_days_before || 30;
+  document.getElementById('e-interval').value = c.remind_interval_days || 7;
+  const imgUrl = c.image_url || '';
+  document.getElementById('e-img').value = imgUrl;
+  const preview = document.getElementById('e-img-preview');
+  if (imgUrl) { preview.src = imgUrl; preview.style.display = 'block'; }
+  else preview.style.display = 'none';
+  // 分類選擇器
+  const sel = document.getElementById('e-cat-selector');
+  sel.innerHTML = '<span class="cat-tag '+(editCatId===null?'active':'')+'" onclick="selectEditCat(null,this)" style="background:#f5f5f5">不分類</span>'
+    + categories.map(cat=>`<span class="cat-tag ${editCatId===cat.id?'active':''}" onclick="selectEditCat(${cat.id},this)" style="background:${cat.color}20;color:${cat.color}">${cat.name}</span>`).join('');
+  // 預覽排程
+  ['e-date','e-before','e-interval'].forEach(id => {
+    document.getElementById(id).addEventListener('input', updateEditPreview);
+  });
+  updateEditPreview();
+  document.getElementById('edit-modal').style.display = 'block';
+}
+
+function closeEdit() {
+  document.getElementById('edit-modal').style.display = 'none';
+}
+
+function selectEditCat(id, el) {
+  editCatId = id;
+  document.querySelectorAll('#e-cat-selector .cat-tag').forEach(t=>t.classList.remove('active'));
+  el.classList.add('active');
+}
+
+function updateEditPreview() {
+  const dateVal = document.getElementById('e-date').value;
+  const before = parseInt(document.getElementById('e-before').value) || 30;
+  const interval = parseInt(document.getElementById('e-interval').value) || 7;
+  const hint = document.getElementById('e-preview-hint');
+  if (!dateVal) { hint.style.display='none'; return; }
+  const courseDate = new Date(dateVal);
+  const start = new Date(courseDate); start.setDate(start.getDate()-before);
+  const dates=[]; let d=new Date(start);
+  while(d<=courseDate) { dates.push(d.toISOString().slice(5,10)); d.setDate(d.getDate()+interval); }
+  const last = courseDate.toISOString().slice(5,10);
+  if(!dates.includes(last)) dates.push(last+'(當天)');
+  hint.style.display='block';
+  hint.innerHTML=`📅 預計發送 <strong>${dates.length}</strong> 次：${dates.join(' → ')}`;
+}
+
+async function saveEdit() {
+  const id = document.getElementById('e-id').value;
+  const title = document.getElementById('e-title').value.trim();
+  let courseDate = document.getElementById('e-date').value.replace(/[\/]/g,'-');
+  if (!title || !courseDate) { showAlert('請填寫課程名稱和日期','err'); return; }
+  const data = await api(`/admin/courses/${id}`, 'PUT', {
+    title, course_date: courseDate,
+    category_id: editCatId,
+    course_time: document.getElementById('e-time').value,
+    location: document.getElementById('e-loc').value,
+    description: document.getElementById('e-desc').value,
+    image_url: document.getElementById('e-img').value.trim(),
+    remind_days_before: parseInt(document.getElementById('e-before').value)||30,
+    remind_interval_days: parseInt(document.getElementById('e-interval').value)||7,
+  });
+  if (data.ok) {
+    showAlert(`✅ 已更新，重新產生 ${data.remind_count} 個提醒日期`);
+    closeEdit();
+    loadCourses();
+  } else {
+    showAlert(data.error||'儲存失敗','err');
+  }
+}
+
 init();
 </script>
+
+<!-- 編輯課程 Modal -->
+<div id="edit-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999;overflow-y:auto">
+  <div style="background:#fff;max-width:600px;margin:40px auto;border-radius:12px;padding:24px;position:relative">
+    <h2 style="color:#06C755;margin-bottom:16px;font-size:16px">✏️ 編輯課程</h2>
+    <input id="e-id" type="hidden">
+    <div class="grid">
+      <div class="full"><label>課程名稱 *</label><input id="e-title"></div>
+      <div class="full"><label>分類</label><div id="e-cat-selector" class="cat-tags"></div></div>
+      <div><label>課程日期 *</label><input id="e-date" type="date"></div>
+      <div><label>上課時間</label><input id="e-time" type="time"></div>
+      <div class="full"><label>地點</label><input id="e-loc"></div>
+      <div class="full"><label>課程說明</label><textarea id="e-desc"></textarea></div>
+      <div class="full">
+        <label>課程圖片網址</label>
+        <input id="e-img" type="url" oninput="previewImg('e-img','e-img-preview')">
+        <img id="e-img-preview" class="img-preview" style="margin-top:6px">
+      </div>
+      <div><label>提前幾天提醒</label><input id="e-before" type="number" min="1" max="365"></div>
+      <div><label>每隔幾天發一次</label><input id="e-interval" type="number" min="1" max="30"></div>
+      <div class="full"><div id="e-preview-hint" class="hint" style="display:none"></div></div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="btn btn-green" onclick="saveEdit()">✅ 儲存變更</button>
+      <button class="btn btn-gray" onclick="closeEdit()">取消</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>"""
 
@@ -554,6 +675,57 @@ def add_course():
     conn.close()
     dates = generate_reminders(course_id, course_date, d.get("remind_days_before",30), d.get("remind_interval_days",7))
     return jsonify({"ok":True,"course_id":course_id,"remind_count":len(dates)})
+
+
+@app.route("/admin/courses/<int:cid>", methods=["PUT"])
+def edit_course(cid):
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    d = request.json
+    title = d.get("title","").strip()
+    course_date = d.get("course_date","").replace("/","-")
+    if not title or not course_date: return jsonify({"ok":False,"error":"請填寫課程名稱和日期"})
+    conn = get_db()
+    conn.execute("""UPDATE courses SET category_id=?,title=?,course_date=?,course_time=?,
+                    location=?,description=?,image_url=?,remind_days_before=?,remind_interval_days=?
+                    WHERE id=?""",
+        (d.get("category_id"), title, course_date, d.get("course_time","09:00"),
+         d.get("location",""), d.get("description",""), d.get("image_url",""),
+         d.get("remind_days_before",30), d.get("remind_interval_days",7), cid))
+    conn.commit()
+    conn.close()
+    dates = generate_reminders(cid, course_date, d.get("remind_days_before",30), d.get("remind_interval_days",7))
+    return jsonify({"ok":True,"remind_count":len(dates)})
+
+
+@app.route("/admin/courses/<int:cid>/send-now", methods=["POST"])
+def send_course_now(cid):
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    conn = get_db()
+    row = conn.execute("""
+        SELECT c.*, cat.name as category_name
+        FROM courses c LEFT JOIN categories cat ON c.category_id=cat.id
+        WHERE c.id=?
+    """, (cid,)).fetchone()
+    conn.close()
+    if not row: return jsonify({"ok":False,"error":"找不到課程"})
+    cd = datetime.strptime(row["course_date"], "%Y-%m-%d").date()
+    days_left = (cd - date.today()).days
+    if days_left < 0:
+        timing = "【已結束】"
+    elif days_left == 0:
+        timing = "【今天上課】"
+    else:
+        timing = f"【還有 {days_left} 天】"
+    cat = f"[{row['category_name']}] " if row["category_name"] else ""
+    text = f"📚 課程提醒 {timing}\n━━━━━━━━━━━━\n{cat}📌 {row['title']}\n📅 {row['course_date']} {row['course_time']}"
+    if row["location"]: text += f"\n📍 {row['location']}"
+    if row["description"]: text += f"\n📝 {row['description']}"
+    messages = []
+    if row["image_url"]:
+        messages.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
+    messages.append({"type":"text","text":text})
+    ok, total = push_to_groups(messages)
+    return jsonify({"ok":ok,"total":total})
 
 @app.route("/admin/courses/<int:cid>", methods=["DELETE"])
 def delete_course(cid):
