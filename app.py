@@ -422,11 +422,13 @@ def handle_text(event):
     text = event["message"]["text"].strip()
     if event["source"]["type"] == "group":
         gid = event["source"]["groupId"]
+        logger.info(f"GROUP MESSAGE: groupId={gid} userId={user_id}")
         conn = get_db()
         conn.execute("INSERT OR IGNORE INTO groups (group_id,joined_at) VALUES (?,?)",
                      (gid, datetime.now().isoformat()))
         conn.commit()
         conn.close()
+        logger.info(f"Group {gid} registered in DB")
     if user_id not in ADMIN_USER_IDS: return
     if text.startswith("/公告 "):
         ok, total = push_to_groups(f"📢 {text[4:].strip()}")
@@ -456,6 +458,16 @@ def handle_leave(event):
         conn.commit()
         conn.close()
 
+
+
+@app.route("/debug-webhook", methods=["POST"])
+def debug_webhook():
+    data = request.get_json()
+    logger.info(f"DEBUG WEBHOOK: {json.dumps(data)}")
+    for event in data.get("events", []):
+        src = event.get("source", {})
+        logger.info(f"DEBUG SOURCE: type={src.get('type')} groupId={src.get('groupId')} userId={src.get('userId')}")
+    return "OK"
 
 @app.route("/init-db")
 def init_db_route():
