@@ -298,8 +298,8 @@ async function loadCourses() {
 
 async function addCourse() {
   const title = document.getElementById('f-title').value.trim();
-  const courseDate = document.getElementById('f-date').value;
-  if (!title || !courseDate) { showAlert('請填寫課程名稱和日期', 'err'); return; }
+  let courseDate = document.getElementById('f-date').value.replace(/[/]/g, '-');
+  if (!title || !courseDate) { showAlert("請填寫課程名稱和日期", "err"); return; }
   const data = await api('/admin/courses', 'POST', {
     title, course_date: courseDate,
     course_time: document.getElementById('f-time').value,
