@@ -498,7 +498,7 @@ async function loadCourses(){
 
 async function addCourse(){
   const title=document.getElementById('f-title').value.trim();
-  let courseDate=document.getElementById('f-date').value.replace(/[\/]/g,'-');
+  let courseDate=document.getElementById('f-date').value.split('/').join('-');
   if(!title||!courseDate){showAlert('請填寫課程名稱和日期','err');return;}
   const data=await api('/admin/courses','POST',{
     title, course_date:courseDate,
@@ -606,7 +606,7 @@ function updateEditPreview() {
 async function saveEdit() {
   const id = document.getElementById('e-id').value;
   const title = document.getElementById('e-title').value.trim();
-  let courseDate = document.getElementById('e-date').value.replace(/[\/]/g,'-');
+  let courseDate = document.getElementById('e-date').value.split('/').join('-');
   if (!title || !courseDate) { showAlert('請填寫課程名稱和日期','err'); return; }
   const data = await api(`/admin/courses/${id}`, 'PUT', {
     title, course_date: courseDate,
