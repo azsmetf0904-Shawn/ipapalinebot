@@ -218,7 +218,7 @@ td{padding:10px 12px;border-bottom:1px solid #f0f0f0;vertical-align:middle}
 .badge-active{background:#e8f5e9;color:#2e7d32}
 .badge-past{background:#f5f5f5;color:#999}
 .badge-soon{background:#fff3e0;color:#e65100}
-@media(max-width:768px){#sidebar{display:none}}
+@media(max-width:768px){.sidebar-hide{display:none}}
 </style>
 </head>
 <body>
