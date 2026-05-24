@@ -1,27 +1,13 @@
 import os, json, hashlib, hmac, base64, sqlite3, logging, requests, tempfile
 from datetime import datetime, date, timedelta
-import pytz  # 引入時區套件
 from flask import Flask, request, abort, jsonify, send_from_directory
 from apscheduler.schedulers.background import BackgroundScheduler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ── 時區設定 ──
-TW_TZ = pytz.timezone('Asia/Taipei')
-
-def get_tw_now():
-    """獲取台灣當前的 datetime（帶時區資訊）"""
-    return datetime.now(TW_TZ)
-
-def get_tw_today():
-    """獲取台灣當前的 date"""
-    return datetime.now(TW_TZ).date()
-
 app = Flask(__name__, static_folder='static')
-
-# 初始化排程器並強制指定台灣時區
-scheduler = BackgroundScheduler(timezone=TW_TZ)
+scheduler = BackgroundScheduler()
 scheduler.start()
 
 LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET", "")
@@ -94,7 +80,7 @@ def init_db():
     """)
     for cat in [("招商活動","#FF6B35"),("系統會議","#1A73E8"),("課程培訓","#06C755"),("其他","#9E9E9E")]:
         conn.execute("INSERT OR IGNORE INTO categories (name,color,created_at) VALUES (?,?,?)",
-                     (cat[0], cat[1], get_tw_now().isoformat()))
+                     (cat[0], cat[1], datetime.now().isoformat()))
     conn.commit()
     conn.close()
     logger.info("DB initialized")
@@ -174,7 +160,7 @@ def generate_reminders(course_id, course_date_str, remind_value, remind_unit, in
     return dates
 
 def check_and_send_reminders():
-    today = get_tw_today().isoformat()  # 使用台灣當前日期
+    today = date.today().isoformat()
     conn = get_db()
     rows = conn.execute("""
         SELECT cr.id, c.title, c.course_date, c.course_time, c.location, c.description, c.image_url,
@@ -185,7 +171,7 @@ def check_and_send_reminders():
     """, (today,)).fetchall()
     for row in rows:
         cd = datetime.strptime(row["course_date"], "%Y-%m-%d").date()
-        days_left = (cd - get_tw_today()).days  # 使用台灣當前日期計算差距
+        days_left = (cd - date.today()).days
         timing = "【今天上課】" if days_left==0 else f"【還有 {days_left} 天】"
         cat = f"[{row['category_name']}] " if row["category_name"] else ""
         text = f"📚 課程提醒 {timing}\n━━━━━━━━━━━━\n{cat}📌 {row['title']}\n📅 {row['course_date']} {row['course_time']}"
@@ -202,7 +188,7 @@ def check_and_send_reminders():
     conn.close()
 
 def check_scheduled_broadcasts():
-    now = get_tw_now().isoformat()  # 使用台灣當前的 ISO 時間比對
+    now = datetime.now().isoformat()
     conn = get_db()
     rows = conn.execute("SELECT * FROM scheduled_broadcasts WHERE active=1 AND next_run<=?", (now,)).fetchall()
     for row in rows:
@@ -211,14 +197,12 @@ def check_scheduled_broadcasts():
             msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
         msgs.append({"type":"text","text":row["content"]})
         ok, total = push_to_groups(msgs)
-        # 更新下一次執行時間，同樣基於台灣當前時間進行累加
-        next_run = (get_tw_now() + seconds_to_timedelta(row["interval_seconds"])).isoformat()
+        next_run = (datetime.now() + seconds_to_timedelta(row["interval_seconds"])).isoformat()
         conn.execute("UPDATE scheduled_broadcasts SET next_run=? WHERE id=?", (next_run, row["id"]))
         logger.info(f"Scheduled '{row['title']}' sent to {ok}/{total}")
     conn.commit()
     conn.close()
 
-# 這裡因為上面初始化 Scheduler 時已經帶入 timezone=TW_TZ，所以每天早上 8:00 會準時以台灣時間觸發
 scheduler.add_job(check_and_send_reminders, "cron", hour=8, minute=0, id="daily_reminder")
 scheduler.add_job(check_scheduled_broadcasts, "interval", minutes=15, id="sched_broadcast")
 
@@ -255,4 +239,337 @@ def get_categories():
     return jsonify({"categories":[dict(r) for r in rows]})
 
 @app.route("/admin/categories", methods=["POST"])
-def add_
+def add_category():
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    d = request.json
+    name = d.get("name","").strip()
+    if not name: return jsonify({"ok":False,"error":"請填寫分類名稱"})
+    try:
+        conn = get_db()
+        conn.execute("INSERT INTO categories (name,color,created_at) VALUES (?,?,?)",
+                     (name, d.get("color","#06C755"), datetime.now().isoformat()))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok":True})
+    except Exception as e:
+        return jsonify({"ok":False,"error":str(e)})
+
+@app.route("/admin/categories/<int:cid>", methods=["DELETE"])
+def delete_category(cid):
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    conn = get_db()
+    conn.execute("UPDATE courses SET category_id=NULL WHERE category_id=?", (cid,))
+    conn.execute("DELETE FROM categories WHERE id=?", (cid,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok":True})
+
+@app.route("/admin/courses", methods=["GET"])
+def get_courses():
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT c.*, cat.name as category_name, cat.color as category_color,
+               COUNT(cr.id) as remind_count, SUM(cr.sent) as sent_count
+        FROM courses c
+        LEFT JOIN categories cat ON c.category_id=cat.id
+        LEFT JOIN course_reminders cr ON c.id=cr.course_id
+        GROUP BY c.id ORDER BY c.course_date ASC
+    """).fetchall()
+    conn.close()
+    return jsonify({"courses":[dict(r) for r in rows]})
+
+@app.route("/admin/courses", methods=["POST"])
+def add_course():
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    d = request.json
+    title = d.get("title","").strip()
+    course_date = d.get("course_date","").replace("/","-")
+    if not title or not course_date: return jsonify({"ok":False,"error":"請填寫課程名稱和日期"})
+    rv = int(d.get("remind_value",30))
+    ru = d.get("remind_unit","days")
+    iv = int(d.get("remind_interval_value",7))
+    iu = d.get("remind_interval_unit","days")
+    conn = get_db()
+    cur = conn.execute(
+        "INSERT INTO courses (category_id,title,course_date,course_time,location,description,image_url,remind_value,remind_unit,remind_interval_value,remind_interval_unit,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (d.get("category_id"), title, course_date, d.get("course_time","09:00"),
+         d.get("location",""), d.get("description",""), d.get("image_url",""),
+         rv, ru, iv, iu, datetime.now().isoformat())
+    )
+    cid = cur.lastrowid
+    conn.commit()
+    conn.close()
+    dates = generate_reminders(cid, course_date, rv, ru, iv, iu)
+    return jsonify({"ok":True,"course_id":cid,"remind_count":len(dates)})
+
+@app.route("/admin/courses/<int:cid>", methods=["PUT"])
+def edit_course(cid):
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    d = request.json
+    title = d.get("title","").strip()
+    course_date = d.get("course_date","").replace("/","-")
+    if not title or not course_date: return jsonify({"ok":False,"error":"請填寫課程名稱和日期"})
+    rv = int(d.get("remind_value",30))
+    ru = d.get("remind_unit","days")
+    iv = int(d.get("remind_interval_value",7))
+    iu = d.get("remind_interval_unit","days")
+    conn = get_db()
+    conn.execute("""UPDATE courses SET category_id=?,title=?,course_date=?,course_time=?,location=?,
+                    description=?,image_url=?,remind_value=?,remind_unit=?,remind_interval_value=?,remind_interval_unit=?
+                    WHERE id=?""",
+        (d.get("category_id"), title, course_date, d.get("course_time","09:00"),
+         d.get("location",""), d.get("description",""), d.get("image_url",""),
+         rv, ru, iv, iu, cid))
+    conn.commit()
+    conn.close()
+    dates = generate_reminders(cid, course_date, rv, ru, iv, iu)
+    return jsonify({"ok":True,"remind_count":len(dates)})
+
+@app.route("/admin/courses/<int:cid>", methods=["DELETE"])
+def delete_course(cid):
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    conn = get_db()
+    conn.execute("DELETE FROM course_reminders WHERE course_id=?", (cid,))
+    conn.execute("DELETE FROM courses WHERE id=?", (cid,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok":True})
+
+@app.route("/admin/courses/<int:cid>/send-now", methods=["POST"])
+def send_course_now(cid):
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    conn = get_db()
+    row = conn.execute("SELECT c.*, cat.name as category_name FROM courses c LEFT JOIN categories cat ON c.category_id=cat.id WHERE c.id=?", (cid,)).fetchone()
+    conn.close()
+    if not row: return jsonify({"ok":False,"error":"找不到課程"})
+    cd = datetime.strptime(row["course_date"], "%Y-%m-%d").date()
+    days_left = (cd - date.today()).days
+    timing = "【今天】" if days_left==0 else f"【還有{days_left}天】" if days_left>0 else "【已結束】"
+    cat = f"[{row['category_name']}] " if row["category_name"] else ""
+    text = f"📚 課程提醒 {timing}\n━━━━━━━━━━━━\n{cat}📌 {row['title']}\n📅 {row['course_date']} {row['course_time']}"
+    if row["location"]: text += f"\n📍 {row['location']}"
+    if row["description"]: text += f"\n📝 {row['description']}"
+    msgs = []
+    if row["image_url"]:
+        msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
+    msgs.append({"type":"text","text":text})
+    ok, total = push_to_groups(msgs)
+    return jsonify({"ok":ok,"total":total})
+
+@app.route("/admin/send", methods=["POST"])
+def admin_send():
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    d = request.json
+    text = d.get("text","").strip()
+    img_url = d.get("image_url","").strip()
+    msgs = []
+    if img_url: msgs.append({"type":"image","originalContentUrl":img_url,"previewImageUrl":img_url})
+    if text: msgs.append({"type":"text","text":text})
+    if not msgs: return jsonify({"ok":0,"total":0})
+    ok, total = push_to_groups(msgs)
+    return jsonify({"ok":ok,"total":total})
+
+@app.route("/admin/upload-image", methods=["POST"])
+def upload_image():
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    if "image" not in request.files:
+        return jsonify({"ok":False,"error":"沒有收到圖片"})
+    f = request.files["image"]
+    image_data = f.read()
+    url, err = upload_image_to_imgbb(image_data, f.filename)
+    if url:
+        return jsonify({"ok":True,"url":url})
+    return jsonify({"ok":False,"error":err or "上傳失敗，請設定 IMGBB_API_KEY"})
+
+@app.route("/admin/scheduled", methods=["GET"])
+def get_scheduled():
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM scheduled_broadcasts ORDER BY created_at DESC").fetchall()
+    conn.close()
+    return jsonify({"schedules":[dict(r) for r in rows]})
+
+@app.route("/admin/scheduled", methods=["POST"])
+def add_scheduled():
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    d = request.json
+    title = d.get("title","").strip()
+    content_text = d.get("content","").strip()
+    if not title or not content_text: return jsonify({"ok":False,"error":"請填寫標題和內容"})
+    iv = float(d.get("interval_value", 1))
+    iu = d.get("interval_unit","days")
+    interval_seconds = unit_to_seconds(iv, iu)
+    start_time = d.get("start_time", datetime.now().isoformat())
+    try:
+        next_run = datetime.fromisoformat(start_time).isoformat()
+    except:
+        next_run = datetime.now().isoformat()
+    conn = get_db()
+    conn.execute("INSERT INTO scheduled_broadcasts (title,content,image_url,interval_seconds,next_run,active,created_at) VALUES (?,?,?,?,?,1,?)",
+        (title, content_text, d.get("image_url",""), interval_seconds, next_run, datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok":True})
+
+@app.route("/admin/scheduled/<int:sid>", methods=["PUT"])
+def update_scheduled(sid):
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    d = request.json
+    conn = get_db()
+    if "active" in d:
+        conn.execute("UPDATE scheduled_broadcasts SET active=? WHERE id=?", (d["active"], sid))
+    else:
+        iv = float(d.get("interval_value",1))
+        iu = d.get("interval_unit","days")
+        conn.execute("UPDATE scheduled_broadcasts SET title=?,content=?,image_url=?,interval_seconds=? WHERE id=?",
+            (d.get("title"), d.get("content"), d.get("image_url",""), unit_to_seconds(iv,iu), sid))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok":True})
+
+@app.route("/admin/scheduled/<int:sid>", methods=["DELETE"])
+def delete_scheduled(sid):
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    conn = get_db()
+    conn.execute("DELETE FROM scheduled_broadcasts WHERE id=?", (sid,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok":True})
+
+@app.route("/admin/scheduled/<int:sid>/send-now", methods=["POST"])
+def send_scheduled_now(sid):
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    conn = get_db()
+    row = conn.execute("SELECT * FROM scheduled_broadcasts WHERE id=?", (sid,)).fetchone()
+    conn.close()
+    if not row: return jsonify({"ok":False,"error":"找不到排程"})
+    msgs = []
+    if row["image_url"]: msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
+    msgs.append({"type":"text","text":row["content"]})
+    ok, total = push_to_groups(msgs)
+    next_run = (datetime.now() + seconds_to_timedelta(row["interval_seconds"])).isoformat()
+    conn = get_db()
+    conn.execute("UPDATE scheduled_broadcasts SET next_run=? WHERE id=?", (next_run, sid))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok":ok,"total":total})
+
+@app.route("/admin/ai-parse", methods=["POST"])
+def ai_parse_course():
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    text = request.json.get("text","").strip()
+    image_url = request.json.get("image_url","").strip()
+    if not text and not image_url: return jsonify({"ok":False,"error":"請輸入課程描述或圖片"})
+    today = date.today().isoformat()
+    prompt = f"""今天是 {today}。請從以下內容提取課程資訊，只回傳 JSON，不要其他文字：
+{{"title":"課程名稱","course_date":"YYYY-MM-DD","course_time":"HH:MM","location":"地點或空字串","description":"說明或空字串","remind_value":30,"remind_unit":"days","remind_interval_value":7,"remind_interval_unit":"days"}}
+用戶輸入：{text}"""
+    try:
+        msg_content = [{"type":"text","text":prompt}]
+        if image_url:
+            msg_content = [
+                {"type":"image","source":{"type":"url","url":image_url}},
+                {"type":"text","text":prompt}
+            ]
+        resp = requests.post("https://api.anthropic.com/v1/messages",
+            headers={"Content-Type":"application/json"},
+            json={"model":"claude-sonnet-4-20250514","max_tokens":500,
+                  "messages":[{"role":"user","content":msg_content}]})
+        ai_text = resp.json()["content"][0]["text"].strip()
+        if "```" in ai_text:
+            ai_text = ai_text.split("```")[1]
+            if ai_text.startswith("json"): ai_text = ai_text[4:]
+        c = json.loads(ai_text.strip())
+        return jsonify({"ok":True,"course":c})
+    except Exception as e:
+        return jsonify({"ok":False,"error":str(e)})
+
+@app.route("/admin/check-reminders", methods=["POST"])
+def trigger_reminders():
+    if request.headers.get("X-Admin-Pass") != ADMIN_PASSWORD: return jsonify({"error":"unauthorized"}),401
+    check_and_send_reminders()
+    check_scheduled_broadcasts()
+    return jsonify({"ok":True,"date":date.today().isoformat()})
+
+# ── Webhook ──
+def handle_text(event):
+    user_id = event["source"].get("userId","")
+    reply_token = event["replyToken"]
+    text = event["message"]["text"].strip()
+    if event["source"]["type"] == "group":
+        gid = event["source"]["groupId"]
+        logger.info(f"GROUP MESSAGE: groupId={gid} userId={user_id}")
+        conn = get_db()
+        conn.execute("INSERT OR IGNORE INTO groups (group_id,joined_at) VALUES (?,?)", (gid, datetime.now().isoformat()))
+        conn.commit()
+        conn.close()
+    if user_id not in ADMIN_USER_IDS: return
+    if text.startswith("/公告 "):
+        ok, total = push_text(f"📢 {text[4:].strip()}")
+        reply_message(reply_token, f"✅ 已發送到 {ok}/{total} 個群組")
+    elif text.startswith("/新增課程 ") or text.startswith("/加課 "):
+        desc = text.split(" ",1)[1].strip()
+        try:
+            today = date.today().isoformat()
+            prompt = f"今天是{today}。從以下文字提取課程資訊，只回傳JSON：{{\"title\":\"\",\"course_date\":\"YYYY-MM-DD\",\"course_time\":\"HH:MM\",\"location\":\"\",\"description\":\"\"}}\n用戶：{desc}"
+            resp = requests.post("https://api.anthropic.com/v1/messages",
+                headers={"Content-Type":"application/json"},
+                json={"model":"claude-sonnet-4-20250514","max_tokens":300,
+                      "messages":[{"role":"user","content":prompt}]})
+            ai_text = resp.json()["content"][0]["text"].strip()
+            if "```" in ai_text:
+                ai_text = ai_text.split("```")[1]
+                if ai_text.startswith("json"): ai_text = ai_text[4:]
+            c = json.loads(ai_text.strip())
+            conn = get_db()
+            cur = conn.execute("INSERT INTO courses (title,course_date,course_time,location,description,image_url,remind_value,remind_unit,remind_interval_value,remind_interval_unit,created_at) VALUES (?,?,?,?,?,?,30,'days',7,'days',?)",
+                (c["title"],c["course_date"],c.get("course_time","09:00"),c.get("location",""),c.get("description",""),"",datetime.now().isoformat()))
+            cid = cur.lastrowid
+            conn.commit()
+            conn.close()
+            dates = generate_reminders(cid, c["course_date"], 30, "days", 7, "days")
+            reply_message(reply_token, f"✅ 課程已新增！\n📌 {c['title']}\n📅 {c['course_date']} {c.get('course_time','09:00')}\n📍 {c.get('location','未指定')}\n🔔 {len(dates)} 個提醒")
+        except Exception as e:
+            reply_message(reply_token, f"❌ AI 解析失敗\n{str(e)[:50]}")
+    elif text == "/課程清單":
+        conn = get_db()
+        rows = conn.execute("SELECT title,course_date FROM courses ORDER BY course_date ASC LIMIT 10").fetchall()
+        conn.close()
+        if not rows: reply_message(reply_token, "目前沒有排程課程")
+        else: reply_message(reply_token, "課程清單：\n" + "\n".join(f"📅 {r['course_date']} {r['title']}" for r in rows))
+    elif text == "/群組清單":
+        reply_message(reply_token, f"已連接 {len(get_all_group_ids())} 個群組")
+    elif text in ("/說明","/help"):
+        reply_message(reply_token,
+            "📋 指令說明\n\n/公告 [內容] 立即發公告\n/新增課程 [描述] AI新增課程\n/課程清單 查看課程\n/群組清單 查看群組\n\n🌐 管理後台：\nhttps://ipapalinebot.onrender.com/admin")
+
+def handle_join(event):
+    if event["source"]["type"] == "group":
+        gid = event["source"]["groupId"]
+        conn = get_db()
+        conn.execute("INSERT OR IGNORE INTO groups (group_id,joined_at) VALUES (?,?)", (gid, datetime.now().isoformat()))
+        conn.commit()
+        conn.close()
+
+def handle_leave(event):
+    if event["source"]["type"] == "group":
+        conn = get_db()
+        conn.execute("DELETE FROM groups WHERE group_id=?", (event["source"]["groupId"],))
+        conn.commit()
+        conn.close()
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    sig = request.headers.get("X-Line-Signature","")
+    body = request.get_data()
+    if not verify_signature(body, sig): abort(400)
+    for event in json.loads(body).get("events",[]):
+        t = event.get("type")
+        if t == "message" and event["message"]["type"] == "text": handle_text(event)
+        elif t == "join": handle_join(event)
+        elif t == "leave": handle_leave(event)
+    return "OK"
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)))
