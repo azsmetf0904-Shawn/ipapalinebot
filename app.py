@@ -287,23 +287,50 @@ td{padding:10px 12px;border-bottom:1px solid #f0f0f0;vertical-align:middle}
 let pw='', categories=[], selectedCatId=null;
 
 function init(){
-  // 從 localStorage 讀取密碼
-  pw = localStorage.getItem('admin_pw') || '';
-  if(pw){ loadAll(); setupPreview(); document.getElementById('login-screen').style.display='none'; }
-  else { document.getElementById('login-screen').style.display='flex'; }
+  // 從網址參數或 cookie 取得密碼
+  const urlParams = new URLSearchParams(window.location.search);
+  const urlPw = urlParams.get('pw');
+  const cookiePw = getCookie('admin_pw');
+  pw = urlPw || cookiePw || '';
+  
+  if(pw){
+    api('/admin/groups').then(data => {
+      if(data.error === 'unauthorized'){
+        pw = '';
+        document.getElementById('login-screen').style.display='flex';
+      } else {
+        setCookie('admin_pw', pw, 7);
+        document.getElementById('login-screen').style.display='none';
+        loadAll();
+        setupPreview();
+      }
+    });
+  } else {
+    document.getElementById('login-screen').style.display='flex';
+  }
+}
+
+function getCookie(name){
+  const v = document.cookie.match('(^|;) ?'+name+'=([^;]*)(;|$)');
+  return v ? v[2] : '';
+}
+
+function setCookie(name, value, days){
+  const d = new Date();
+  d.setTime(d.getTime() + days*24*60*60*1000);
+  document.cookie = name+'='+value+';expires='+d.toUTCString()+';path=/';
 }
 
 function doLogin(){
   const input = document.getElementById('pw-input').value.trim();
-  if(!input){ return; }
+  if(!input) return;
   pw = input;
-  // 測試密碼
   api('/admin/groups').then(data => {
     if(data.error === 'unauthorized'){
       document.getElementById('login-err').textContent = '密碼錯誤，請再試一次';
       pw = '';
     } else {
-      localStorage.setItem('admin_pw', pw);
+      setCookie('admin_pw', pw, 7);
       document.getElementById('login-screen').style.display='none';
       loadAll();
       setupPreview();
@@ -312,9 +339,8 @@ function doLogin(){
 }
 
 function doLogout(){
-  localStorage.removeItem('admin_pw');
-  pw = '';
-  location.reload();
+  document.cookie = 'admin_pw=;expires=Thu, 01 Jan 1970 00:00:00 UTC;path=/';
+  location.href='/admin';
 }
 
 function toggle(id){
@@ -350,8 +376,11 @@ async function loadAll(){
 
 async function loadGroupCount(){
   const data=await api('/admin/groups');
-  document.getElementById('grp-count').textContent=
-    data.count!==undefined?`已連接 ${data.count} 個群組`:'載入失敗';
+  if(data.count!==undefined){
+    document.getElementById('grp-count').textContent=`已連接 ${data.count} 個群組`;
+  } else {
+    document.getElementById('grp-count').textContent='LINE 公告機器人';
+  }
 }
 
 async function loadCategories(){
