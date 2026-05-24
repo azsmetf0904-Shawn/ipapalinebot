@@ -1,0 +1,903 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ipapa 公告管理</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,sans-serif;background:#f0f4f8;color:#333;height:100vh;overflow:hidden;display:flex;flex-direction:column}
+/* Header */
+.header{background:#06C755;color:#fff;padding:14px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0;z-index:10}
+.header h1{font-size:18px;flex:1}.header p{font-size:12px;opacity:.85}
+.btn-logout{background:rgba(255,255,255,.2);border:none;color:#fff;padding:6px 14px;border-radius:8px;cursor:pointer;font-size:13px}
+/* Layout */
+.layout{display:flex;flex:1;overflow:hidden}
+/* Sidebar */
+.sidebar{width:240px;min-width:240px;background:#fff;border-right:2px solid #e8f5e9;display:flex;flex-direction:column;overflow:hidden}
+.sidebar-header{padding:14px 16px;border-bottom:1px solid #f0f0f0;font-size:11px;font-weight:700;color:#aaa;letter-spacing:1px;text-transform:uppercase}
+.sidebar-body{flex:1;overflow-y:auto;padding:12px}
+.sidebar-section{margin-bottom:16px}
+.sidebar-section-title{font-size:12px;font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.si{padding:8px 10px;border-radius:8px;margin-bottom:5px;font-size:12px;cursor:pointer;border:1px solid #f0f0f0;background:#fff;transition:background .15s}
+.si:hover{background:#f8fffe}
+.si-title{font-weight:600;color:#333;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px}
+.si-sub{color:#aaa;font-size:11px}
+.si-badge{display:inline-block;padding:1px 6px;border-radius:10px;font-size:10px;font-weight:700;float:right;margin-top:1px}
+.badge-today{background:#fff3e0;color:#e65100}
+.badge-soon{background:#e8f0fe;color:#1a73e8}
+.badge-ok{background:#e8f5e9;color:#2e7d32}
+.badge-past{background:#f5f5f5;color:#999}
+.badge-active{background:#e8f5e9;color:#2e7d32}
+.badge-paused{background:#f5f5f5;color:#aaa}
+.sidebar-footer{padding:10px;border-top:1px solid #f0f0f0;font-size:10px;color:#ccc;text-align:center}
+/* Main content */
+.main{flex:1;overflow-y:auto;padding:20px}
+/* Cards */
+.card{background:#fff;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+.card-header{display:flex;align-items:center;justify-content:space-between;cursor:pointer;margin-bottom:0}
+.card-header h2{font-size:14px;font-weight:700;color:#06C755;display:flex;align-items:center;gap:8px}
+.card-header .toggle-icon{color:#aaa;font-size:12px;transition:transform .2s}
+.card-body{margin-top:16px}
+.card-body.hidden{display:none}
+/* Forms */
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.full{grid-column:1/-1}
+label{font-size:12px;color:#666;font-weight:600;display:block;margin-bottom:4px}
+input,textarea,select{width:100%;border:1px solid #e0e0e0;border-radius:8px;padding:8px 12px;font-size:13px;transition:border .2s}
+input:focus,textarea:focus,select:focus{outline:none;border-color:#06C755}
+textarea{min-height:70px;resize:vertical}
+.unit-row{display:flex;gap:6px}
+.unit-row input{flex:1}.unit-row select{width:100px;flex-shrink:0}
+/* Buttons */
+.btn{padding:8px 18px;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700;transition:opacity .2s}
+.btn:hover{opacity:.85}
+.btn-green{background:#06C755;color:#fff}
+.btn-blue{background:#1a73e8;color:#fff}
+.btn-red{background:#e53935;color:#fff;padding:5px 10px;font-size:12px}
+.btn-gray{background:#f0f0f0;color:#555;padding:5px 10px;font-size:12px}
+.btn-sm{padding:5px 10px;font-size:12px}
+/* Tables */
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{background:#f8f9fa;padding:10px 12px;text-align:left;font-weight:700;color:#666;font-size:12px}
+td{padding:10px 12px;border-bottom:1px solid #f5f5f5;vertical-align:middle}
+.td-actions{display:flex;gap:5px;flex-wrap:wrap}
+/* Category tags */
+.cat-tags{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:4px}
+.cat-tag{padding:4px 12px;border-radius:20px;font-size:12px;cursor:pointer;border:2px solid transparent;font-weight:600}
+.cat-tag.selected{border-color:#333!important}
+/* Status badges */
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700}
+.badge-green{background:#e8f5e9;color:#2e7d32}
+.badge-gray{background:#f5f5f5;color:#777}
+.badge-orange{background:#fff3e0;color:#e65100}
+/* Category sections */
+.cat-section{border:1px solid #e8f5e9;border-radius:10px;overflow:hidden;margin-bottom:12px}
+.cat-section-header{background:#f8fffe;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;font-weight:700;font-size:13px}
+.cat-section-body{display:block}
+/* Alerts */
+.alert-box{position:fixed;top:70px;right:20px;z-index:9999;min-width:250px}
+.alert{padding:12px 16px;border-radius:10px;margin-bottom:8px;font-size:13px;font-weight:600;box-shadow:0 4px 12px rgba(0,0,0,.15);animation:fadeIn .3s}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
+.alert-ok{background:#e8f5e9;color:#2e7d32;border:1px solid #c8e6c9}
+.alert-err{background:#ffebee;color:#c62828;border:1px solid #ffcdd2}
+/* Login */
+#login-screen{position:fixed;inset:0;background:#f0f4f8;z-index:9999;display:flex;align-items:center;justify-content:center}
+.login-box{background:#fff;border-radius:16px;padding:40px;box-shadow:0 4px 24px rgba(0,0,0,.1);text-align:center;width:320px}
+/* Image preview */
+.img-preview{width:80px;height:60px;object-fit:cover;border-radius:6px;display:none;margin-top:6px}
+/* Upload area */
+.upload-area{border:2px dashed #ddd;border-radius:8px;padding:16px;text-align:center;cursor:pointer;font-size:13px;color:#aaa;transition:border .2s}
+.upload-area:hover{border-color:#06C755;color:#06C755}
+.upload-area.dragover{border-color:#06C755;background:#f8fffe}
+/* Hint */
+.hint{font-size:12px;color:#888;background:#f8f9fa;padding:8px 12px;border-radius:8px;margin-top:6px;line-height:1.6}
+sub{font-size:11px;color:#999}
+@media(max-width:768px){.sidebar{display:none}.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<!-- Login -->
+<div id="login-screen">
+  <div class="login-box">
+    <div style="font-size:48px;margin-bottom:12px">📢</div>
+    <h2 style="color:#06C755;margin-bottom:4px">ipapa 管理後台</h2>
+    <p style="color:#999;font-size:13px;margin-bottom:20px">請輸入管理密碼</p>
+    <input id="pw-input" type="password" placeholder="管理密碼" style="margin-bottom:10px;text-align:center"
+      onkeydown="if(event.key==='Enter')doLogin()">
+    <p id="login-err" style="color:#e53935;font-size:12px;min-height:16px;margin-bottom:8px"></p>
+    <button class="btn btn-green" style="width:100%" onclick="doLogin()">登入</button>
+  </div>
+</div>
+
+<!-- Alert box -->
+<div class="alert-box" id="alert-box"></div>
+
+<!-- Header -->
+<div class="header">
+  <span style="font-size:24px">📢</span>
+  <div style="flex:1">
+    <h1>ipapa 課程公告管理</h1>
+    <p id="grp-count">連接中...</p>
+  </div>
+  <button class="btn-logout" onclick="doLogout()">登出</button>
+</div>
+
+<!-- Layout -->
+<div class="layout">
+
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-header">排程總覽</div>
+    <div class="sidebar-body">
+      <div class="sidebar-section">
+        <div class="sidebar-section-title"><span>📚</span><span style="color:#06C755">課程提醒</span></div>
+        <div id="sb-courses"><p style="font-size:12px;color:#ccc">載入中...</p></div>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section-title"><span>⏰</span><span style="color:#1a73e8">定時發送</span></div>
+        <div id="sb-scheduled"><p style="font-size:12px;color:#ccc">載入中...</p></div>
+      </div>
+    </div>
+    <div class="sidebar-footer">每 15 分鐘自動檢查</div>
+  </div>
+
+  <!-- Main -->
+  <div class="main">
+
+    <!-- 立即發公告 -->
+    <div class="card">
+      <div class="card-header" onclick="toggleCard('send')">
+        <h2>📣 立即發公告</h2>
+        <span class="toggle-icon" id="icon-send">▼</span>
+      </div>
+      <div class="card-body" id="body-send">
+        <div class="grid">
+          <div class="full"><label>公告內容</label>
+            <textarea id="manual-msg" placeholder="輸入公告內容..."></textarea>
+          </div>
+          <div class="full">
+            <label>附加圖片</label>
+            <div class="upload-area" id="manual-upload-area" onclick="document.getElementById('manual-img-file').click()"
+              ondragover="event.preventDefault();this.classList.add('dragover')"
+              ondragleave="this.classList.remove('dragover')"
+              ondrop="handleDrop(event,'manual-img-url','manual-img-preview')">
+              📎 點擊上傳或拖放圖片，或貼上圖片網址
+            </div>
+            <input type="file" id="manual-img-file" accept="image/*" style="display:none" onchange="handleFileSelect(this,'manual-img-url','manual-img-preview','manual-upload-area')">
+            <input id="manual-img-url" type="url" placeholder="https://example.com/image.jpg" style="margin-top:6px" oninput="previewImg('manual-img-url','manual-img-preview')">
+            <img id="manual-img-preview" class="img-preview">
+          </div>
+        </div>
+        <button class="btn btn-blue" style="margin-top:12px" onclick="sendManual()">立即發送到所有群組</button>
+      </div>
+    </div>
+
+    <!-- 分類管理 -->
+    <div class="card">
+      <div class="card-header" onclick="toggleCard('cat')">
+        <h2>🏷️ 分類管理</h2>
+        <span class="toggle-icon" id="icon-cat">▼</span>
+      </div>
+      <div class="card-body hidden" id="body-cat">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+          <input id="new-cat-name" placeholder="新分類名稱" style="width:150px">
+          <input id="new-cat-color" type="color" value="#06C755" style="width:44px;height:36px;padding:2px">
+          <button class="btn btn-green btn-sm" onclick="addCategory()">新增分類</button>
+        </div>
+        <div id="cat-list"></div>
+      </div>
+    </div>
+
+    <!-- 新增課程 -->
+    <div class="card">
+      <div class="card-header" onclick="toggleCard('add')">
+        <h2>➕ 新增課程</h2>
+        <span class="toggle-icon" id="icon-add">▼</span>
+      </div>
+      <div class="card-body" id="body-add">
+        <div class="grid">
+          <div class="full"><label>課程名稱 *</label><input id="f-title" placeholder="例：2026 春季瑜珈課程"></div>
+          <div class="full"><label>選擇分類</label><div id="cat-selector" class="cat-tags"></div></div>
+          <div><label>課程日期 *</label><input id="f-date" type="date" oninput="updatePreview('f')"></div>
+          <div><label>上課時間</label><input id="f-time" type="time" value="09:00"></div>
+          <div class="full"><label>地點</label><input id="f-loc"></div>
+          <div class="full"><label>課程說明（選填）</label><textarea id="f-desc" placeholder="報名連結、注意事項..."></textarea></div>
+          <div class="full">
+            <label>課程圖片</label>
+            <div class="upload-area" onclick="document.getElementById('f-img-file').click()"
+              ondragover="event.preventDefault();this.classList.add('dragover')"
+              ondragleave="this.classList.remove('dragover')"
+              ondrop="handleDrop(event,'f-img-url','f-img-preview')">
+              📎 點擊上傳或拖放圖片
+            </div>
+            <input type="file" id="f-img-file" accept="image/*" style="display:none" onchange="handleFileSelect(this,'f-img-url','f-img-preview',null)">
+            <input id="f-img-url" type="url" placeholder="或貼上圖片網址" style="margin-top:6px" oninput="previewImg('f-img-url','f-img-preview')">
+            <img id="f-img-preview" class="img-preview">
+          </div>
+          <div>
+            <label>提前多久開始提醒</label>
+            <div class="unit-row">
+              <input id="f-rv" type="number" value="30" min="1" oninput="updatePreview('f')">
+              <select id="f-ru" onchange="updatePreview('f')">
+                <option value="seconds">秒</option>
+                <option value="minutes">分鐘</option>
+                <option value="hours">小時</option>
+                <option value="days" selected>天</option>
+                <option value="months">月</option>
+                <option value="years">年</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label>每隔多久發一次</label>
+            <div class="unit-row">
+              <input id="f-iv" type="number" value="7" min="1" oninput="updatePreview('f')">
+              <select id="f-iu" onchange="updatePreview('f')">
+                <option value="seconds">秒</option>
+                <option value="minutes">分鐘</option>
+                <option value="hours">小時</option>
+                <option value="days" selected>天</option>
+                <option value="months">月</option>
+                <option value="years">年</option>
+              </select>
+            </div>
+          </div>
+          <div class="full"><div id="f-preview-hint" class="hint" style="display:none"></div></div>
+        </div>
+        <button class="btn btn-green" style="margin-top:12px" onclick="addCourse()">✅ 新增課程</button>
+      </div>
+    </div>
+
+    <!-- 定時發送 -->
+    <div class="card">
+      <div class="card-header" onclick="toggleCard('sched')">
+        <h2>⏰ 定時發送</h2>
+        <span class="toggle-icon" id="icon-sched">▼</span>
+      </div>
+      <div class="card-body hidden" id="body-sched">
+        <div style="border:1px solid #e8f5e9;border-radius:10px;padding:16px;margin-bottom:16px">
+          <p style="font-weight:700;color:#06C755;font-size:13px;margin-bottom:12px">➕ 新增定時發送</p>
+          <div class="grid">
+            <div class="full"><label>名稱（備註用）</label><input id="s-title" placeholder="例：每日早安訊息"></div>
+            <div class="full"><label>公告內容</label><textarea id="s-content" placeholder="例：📢 早安！今天也請準時上工"></textarea></div>
+            <div class="full">
+              <label>圖片（選填）</label>
+              <div class="upload-area" onclick="document.getElementById('s-img-file').click()"
+                ondragover="event.preventDefault();this.classList.add('dragover')"
+                ondragleave="this.classList.remove('dragover')"
+                ondrop="handleDrop(event,'s-img-url','s-img-preview')">
+                📎 點擊上傳或拖放圖片
+              </div>
+              <input type="file" id="s-img-file" accept="image/*" style="display:none" onchange="handleFileSelect(this,'s-img-url','s-img-preview',null)">
+              <input id="s-img-url" type="url" placeholder="或貼上圖片網址" style="margin-top:6px" oninput="previewImg('s-img-url','s-img-preview')">
+              <img id="s-img-preview" class="img-preview">
+            </div>
+            <div>
+              <label>發送間隔</label>
+              <div class="unit-row">
+                <input id="s-iv" type="number" value="1" min="1">
+                <select id="s-iu">
+                  <option value="seconds">秒</option>
+                  <option value="minutes">分鐘</option>
+                  <option value="hours">小時</option>
+                  <option value="days" selected>天</option>
+                  <option value="months">月</option>
+                  <option value="years">年</option>
+                </select>
+              </div>
+            </div>
+            <div><label>第一次發送時間</label><input id="s-start" type="datetime-local"></div>
+          </div>
+          <button class="btn btn-green btn-sm" style="margin-top:12px" onclick="addScheduled()">➕ 新增</button>
+        </div>
+        <div id="sched-list"><p style="color:#aaa;text-align:center;padding:16px;font-size:13px">尚未設定定時發送</p></div>
+      </div>
+    </div>
+
+    <!-- AI 智慧新增 -->
+    <div class="card">
+      <div class="card-header" onclick="toggleCard('ai')">
+        <h2>🤖 AI 智慧新增課程</h2>
+        <span class="toggle-icon" id="icon-ai">▼</span>
+      </div>
+      <div class="card-body hidden" id="body-ai">
+        <p style="font-size:12px;color:#888;margin-bottom:12px">用自然語言描述課程，或上傳含課程資訊的圖片，AI 自動解析並填入表單</p>
+        <div class="grid">
+          <div class="full"><label>文字描述</label>
+            <textarea id="ai-input" placeholder="例：下個月20號早上十點在台北信義區有招商說明會，提前一個月每週提醒"></textarea>
+          </div>
+          <div class="full">
+            <label>📸 上傳圖片（海報、DM 等含課程資訊的圖片）</label>
+            <div class="upload-area" id="ai-upload-area" onclick="document.getElementById('ai-img-file').click()"
+              ondragover="event.preventDefault();this.classList.add('dragover')"
+              ondragleave="this.classList.remove('dragover')"
+              ondrop="handleDrop(event,'ai-img-url','ai-img-preview')">
+              📎 點擊上傳含課程資訊的圖片，AI 自動讀取
+            </div>
+            <input type="file" id="ai-img-file" accept="image/*" style="display:none" onchange="handleFileSelect(this,'ai-img-url','ai-img-preview','ai-upload-area')">
+            <img id="ai-img-preview" class="img-preview" style="margin-top:6px">
+            <input id="ai-img-url" type="hidden">
+          </div>
+        </div>
+        <button class="btn btn-green" style="margin-top:12px" id="ai-btn" onclick="aiParse()">🤖 AI 解析</button>
+        <div id="ai-result" style="display:none;margin-top:16px;padding:16px;background:#f8fffe;border-radius:10px;border:1px solid #e8f5e9"></div>
+      </div>
+    </div>
+
+    <!-- 課程列表 -->
+    <div class="card">
+      <h2 style="margin-bottom:16px">📅 課程列表</h2>
+      <div id="course-list"><p style="color:#aaa;text-align:center;padding:20px">載入中...</p></div>
+    </div>
+
+  </div><!-- end main -->
+</div><!-- end layout -->
+
+<!-- Edit Modal -->
+<div id="edit-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9998;overflow-y:auto">
+  <div style="background:#fff;max-width:580px;margin:40px auto;border-radius:12px;padding:24px;position:relative">
+    <h2 style="color:#06C755;font-size:15px;margin-bottom:16px">✏️ 編輯課程</h2>
+    <input id="e-id" type="hidden">
+    <div class="grid">
+      <div class="full"><label>課程名稱 *</label><input id="e-title"></div>
+      <div class="full"><label>分類</label><div id="e-cat-selector" class="cat-tags"></div></div>
+      <div><label>課程日期 *</label><input id="e-date" type="date" oninput="updatePreview('e')"></div>
+      <div><label>上課時間</label><input id="e-time" type="time"></div>
+      <div class="full"><label>地點</label><input id="e-loc"></div>
+      <div class="full"><label>課程說明</label><textarea id="e-desc"></textarea></div>
+      <div class="full">
+        <label>課程圖片</label>
+        <div class="upload-area" onclick="document.getElementById('e-img-file').click()">📎 點擊上傳圖片</div>
+        <input type="file" id="e-img-file" accept="image/*" style="display:none" onchange="handleFileSelect(this,'e-img-url','e-img-preview',null)">
+        <input id="e-img-url" type="url" placeholder="或貼上圖片網址" style="margin-top:6px" oninput="previewImg('e-img-url','e-img-preview')">
+        <img id="e-img-preview" class="img-preview">
+      </div>
+      <div>
+        <label>提前多久提醒</label>
+        <div class="unit-row">
+          <input id="e-rv" type="number" min="1" oninput="updatePreview('e')">
+          <select id="e-ru" onchange="updatePreview('e')">
+            <option value="seconds">秒</option><option value="minutes">分鐘</option>
+            <option value="hours">小時</option><option value="days">天</option>
+            <option value="months">月</option><option value="years">年</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label>每隔多久提醒</label>
+        <div class="unit-row">
+          <input id="e-iv" type="number" min="1" oninput="updatePreview('e')">
+          <select id="e-iu" onchange="updatePreview('e')">
+            <option value="seconds">秒</option><option value="minutes">分鐘</option>
+            <option value="hours">小時</option><option value="days">天</option>
+            <option value="months">月</option><option value="years">年</option>
+          </select>
+        </div>
+      </div>
+      <div class="full"><div id="e-preview-hint" class="hint" style="display:none"></div></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button class="btn btn-green" onclick="saveEdit()">✅ 儲存</button>
+      <button class="btn btn-gray" onclick="closeEdit()">取消</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let pw = '', categories = [], selectedCatId = null, editCatId = null;
+
+// ── Auth ──
+function init() {
+  const urlPw = new URLSearchParams(location.search).get('pw');
+  const cookiePw = getCookie('admin_pw');
+  pw = urlPw || cookiePw || '';
+  if (pw) {
+    api('/admin/groups').then(d => {
+      if (d.error === 'unauthorized') { pw=''; showLoginScreen(); }
+      else { hideLoginScreen(); loadAll(); }
+    });
+  } else showLoginScreen();
+}
+function showLoginScreen(){ document.getElementById('login-screen').style.display='flex'; }
+function hideLoginScreen(){ document.getElementById('login-screen').style.display='none'; }
+function doLogin(){
+  pw = document.getElementById('pw-input').value.trim();
+  if (!pw) return;
+  api('/admin/groups').then(d => {
+    if (d.error==='unauthorized') { document.getElementById('login-err').textContent='密碼錯誤'; pw=''; }
+    else { setCookie('admin_pw',pw,7); hideLoginScreen(); loadAll(); }
+  });
+}
+function doLogout(){ document.cookie='admin_pw=;expires=Thu,01 Jan 1970 00:00:00 UTC;path=/'; pw=''; showLoginScreen(); }
+function getCookie(n){ const v=document.cookie.match('(^|;) ?'+n+'=([^;]*)(;|$)'); return v?v[2]:''; }
+function setCookie(n,v,d){ const e=new Date(); e.setTime(e.getTime()+d*86400000); document.cookie=n+'='+v+';expires='+e.toUTCString()+';path=/'; }
+
+// ── API ──
+async function api(path, method='GET', body=null) {
+  const opts = { method, headers: {'Content-Type':'application/json','X-Admin-Pass':pw} };
+  if (body) opts.body = JSON.stringify(body);
+  try { const r=await fetch(path,opts); return await r.json(); }
+  catch(e) { return {error:e.message}; }
+}
+
+async function apiForm(path, formData) {
+  try {
+    const r = await fetch(path, { method:'POST', headers:{'X-Admin-Pass':pw}, body:formData });
+    return await r.json();
+  } catch(e) { return {error:e.message}; }
+}
+
+// ── Alerts ──
+function showAlert(msg, type='ok') {
+  const el = document.getElementById('alert-box');
+  const div = document.createElement('div');
+  div.className = `alert alert-${type}`;
+  div.textContent = msg;
+  el.appendChild(div);
+  setTimeout(() => div.remove(), 4000);
+}
+
+// ── Card toggle ──
+function toggleCard(id) {
+  const body = document.getElementById('body-'+id);
+  const icon = document.getElementById('icon-'+id);
+  const hidden = body.classList.toggle('hidden');
+  if (icon) icon.style.transform = hidden ? '' : 'rotate(180deg)';
+}
+
+// ── Image upload ──
+function previewImg(urlId, previewId) {
+  const url = document.getElementById(urlId).value.trim();
+  const img = document.getElementById(previewId);
+  if (url) { img.src=url; img.style.display='block'; } else img.style.display='none';
+}
+
+async function handleFileSelect(input, urlId, previewId, uploadAreaId) {
+  const file = input.files[0];
+  if (!file) return;
+  if (uploadAreaId) document.getElementById(uploadAreaId).textContent = '⏳ 上傳中...';
+  const fd = new FormData();
+  fd.append('image', file);
+  const data = await apiForm('/admin/upload-image', fd);
+  if (data.ok) {
+    document.getElementById(urlId).value = data.url;
+    const img = document.getElementById(previewId);
+    img.src = data.url; img.style.display = 'block';
+    if (uploadAreaId) document.getElementById(uploadAreaId).textContent = '✅ ' + file.name;
+    showAlert('圖片上傳成功');
+  } else {
+    showAlert(data.error || '上傳失敗，請改用圖片網址', 'err');
+    if (uploadAreaId) document.getElementById(uploadAreaId).textContent = '📎 點擊上傳圖片';
+  }
+}
+
+function handleDrop(e, urlId, previewId) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('dragover');
+  const file = e.dataTransfer.files[0];
+  if (!file || !file.type.startsWith('image/')) return;
+  const tmpInput = { files:[file] };
+  handleFileSelect(tmpInput, urlId, previewId, null);
+}
+
+// ── Load all ──
+async function loadAll() {
+  loadGroupCount();
+  await loadCategories();
+  loadCourses();
+  loadScheduled();
+  loadSidebar();
+  // Default start time
+  const d = new Date(); d.setDate(d.getDate()+1); d.setHours(8,0,0,0);
+  const pad = n=>String(n).padStart(2,'0');
+  document.getElementById('s-start').value = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T08:00`;
+}
+
+async function loadGroupCount() {
+  const data = await api('/admin/groups');
+  document.getElementById('grp-count').textContent = data.count!==undefined ? `已連接 ${data.count} 個群組` : 'LINE 公告機器人';
+}
+
+// ── Categories ──
+async function loadCategories() {
+  const data = await api('/admin/categories');
+  if (!data.categories) return;
+  categories = data.categories;
+  // Category list
+  const el = document.getElementById('cat-list');
+  el.innerHTML = categories.map(c=>`
+    <span style="display:inline-flex;align-items:center;gap:6px;background:#f5f5f5;border-radius:20px;padding:4px 12px;margin:3px">
+      <span style="width:8px;height:8px;border-radius:50%;background:${c.color};display:inline-block"></span>
+      <span style="font-size:13px">${c.name}</span>
+      <button class="btn btn-red" style="padding:1px 6px;font-size:10px" onclick="deleteCategory(${c.id})">✕</button>
+    </span>`).join('');
+  // Add course selector
+  buildCatSelector('cat-selector', selectedCatId, id=>selectedCatId=id);
+}
+
+function buildCatSelector(containerId, currentId, onSelect) {
+  const el = document.getElementById(containerId);
+  el.innerHTML = `<span class="cat-tag ${currentId===null?'selected':''}" onclick="selectCat(null,this,'${containerId}')" style="background:#f5f5f5;color:#555">不分類</span>`
+    + categories.map(c=>`<span class="cat-tag ${currentId===c.id?'selected':''}" onclick="selectCat(${c.id},this,'${containerId}')" style="background:${c.color}20;color:${c.color}">${c.name}</span>`).join('');
+}
+
+function selectCat(id, el, containerId) {
+  if (containerId==='cat-selector') selectedCatId=id;
+  else editCatId=id;
+  document.querySelectorAll(`#${containerId} .cat-tag`).forEach(t=>t.classList.remove('selected'));
+  el.classList.add('selected');
+}
+
+async function addCategory() {
+  const name=document.getElementById('new-cat-name').value.trim();
+  const color=document.getElementById('new-cat-color').value;
+  if(!name){showAlert('請輸入分類名稱','err');return;}
+  const data=await api('/admin/categories','POST',{name,color});
+  if(data.ok){document.getElementById('new-cat-name').value='';loadCategories();showAlert('分類已新增');}
+  else showAlert(data.error||'新增失敗','err');
+}
+
+async function deleteCategory(id) {
+  if(!confirm('確定刪除分類？'))return;
+  await api(`/admin/categories/${id}`,'DELETE');
+  loadCategories(); showAlert('已刪除');
+}
+
+// ── Preview ──
+function unitToSeconds(v,u){const m={seconds:1,minutes:60,hours:3600,days:86400,months:2592000,years:31536000};return v*m[u];}
+function updatePreview(prefix) {
+  const dateVal=document.getElementById(prefix+'-date').value;
+  const rv=parseInt(document.getElementById(prefix+'-rv').value)||30;
+  const ru=document.getElementById(prefix+'-ru').value;
+  const iv=parseInt(document.getElementById(prefix+'-iv').value)||7;
+  const iu=document.getElementById(prefix+'-iu').value;
+  const hint=document.getElementById(prefix+'-preview-hint');
+  if(!dateVal){hint.style.display='none';return;}
+  const cd=new Date(dateVal);
+  const beforeMs=unitToSeconds(rv,ru)*1000;
+  const intervalMs=Math.max(unitToSeconds(iv,iu)*1000,86400000);
+  const start=new Date(cd.getTime()-beforeMs);
+  const dates=[];let d=new Date(start);
+  while(d<=cd){dates.push(d.toISOString().slice(5,10));d=new Date(d.getTime()+intervalMs);}
+  const last=cd.toISOString().slice(5,10);
+  if(!dates.includes(last))dates.push(last+'(當天)');
+  hint.style.display='block';
+  hint.innerHTML=`📅 預計發送 <strong>${dates.length}</strong> 次：${dates.join(' → ')}`;
+}
+
+// ── Courses ──
+async function loadCourses() {
+  const data=await api('/admin/courses');
+  const el=document.getElementById('course-list');
+  if(data.error==='unauthorized'){el.innerHTML='<p style="color:red">密碼錯誤</p>';return;}
+  if(!data.courses||!data.courses.length){el.innerHTML='<p style="color:#aaa;text-align:center;padding:20px">尚未新增任何課程</p>';return;}
+  const today=new Date().toISOString().slice(0,10);
+  const grouped={};
+  data.courses.forEach(c=>{
+    const key=c.category_name||'未分類';
+    const color=c.category_color||'#9E9E9E';
+    if(!grouped[key])grouped[key]={color,courses:[]};
+    grouped[key].courses.push(c);
+  });
+  let html='';
+  for(const[name,g] of Object.entries(grouped)){
+    html+=`<div class="cat-section">
+      <div class="cat-section-header" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
+        <span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${g.color};margin-right:8px"></span>${name}（${g.courses.length}堂）</span>
+        <span style="color:#aaa;font-size:12px">▼</span>
+      </div>
+      <div class="cat-section-body">
+        <table><tr><th>課程名稱</th><th>日期</th><th>地點</th><th>提醒</th><th>狀態</th><th>操作</th></tr>`;
+    for(const c of g.courses){
+      const isPast=c.course_date<today, isToday=c.course_date===today;
+      const badge=isPast?'<span class="badge badge-gray">已結束</span>':isToday?'<span class="badge badge-orange">今天</span>':'<span class="badge badge-green">排程中</span>';
+      const imgTag=c.image_url?`<img src="${c.image_url}" style="width:36px;height:27px;object-fit:cover;border-radius:4px;float:right">`:''
+      const cJson=encodeURIComponent(JSON.stringify(c));
+      html+=`<tr>
+        <td>${imgTag}<strong>${c.title}</strong>${c.description?'<br><sub>'+c.description.slice(0,25)+'</sub>':''}</td>
+        <td>${c.course_date}<br><sub>${c.course_time}</sub></td>
+        <td>${c.location||'-'}</td>
+        <td><sub>${c.remind_count||0}次/已發${c.sent_count||0}</sub></td>
+        <td>${badge}</td>
+        <td class="td-actions">
+          <button class="btn btn-gray" onclick="openEdit('${cJson}')">編輯</button>
+          <button class="btn btn-blue btn-sm" onclick="sendCourseNow(${c.id})">立即發</button>
+          <button class="btn btn-red" onclick="deleteCourse(${c.id})">刪除</button>
+        </td>
+      </tr>`;
+    }
+    html+='</table></div></div>';
+  }
+  el.innerHTML=html;
+}
+
+async function addCourse() {
+  const title=document.getElementById('f-title').value.trim();
+  const courseDate=document.getElementById('f-date').value.split('/').join('-');
+  if(!title||!courseDate){showAlert('請填寫課程名稱和日期','err');return;}
+  const data=await api('/admin/courses','POST',{
+    title, course_date:courseDate,
+    category_id:selectedCatId,
+    course_time:document.getElementById('f-time').value,
+    location:document.getElementById('f-loc').value,
+    description:document.getElementById('f-desc').value,
+    image_url:document.getElementById('f-img-url').value.trim(),
+    remind_value:parseInt(document.getElementById('f-rv').value)||30,
+    remind_unit:document.getElementById('f-ru').value,
+    remind_interval_value:parseInt(document.getElementById('f-iv').value)||7,
+    remind_interval_unit:document.getElementById('f-iu').value,
+  });
+  if(data.ok){
+    showAlert(`✅ 課程已新增，產生 ${data.remind_count} 個提醒`);
+    ['f-title','f-date','f-loc','f-desc','f-img-url'].forEach(id=>document.getElementById(id).value='');
+    document.getElementById('f-img-preview').style.display='none';
+    document.getElementById('f-preview-hint').style.display='none';
+    selectedCatId=null;
+    loadCourses(); loadSidebar();
+  } else showAlert(data.error||'新增失敗','err');
+}
+
+async function deleteCourse(id) {
+  if(!confirm('確定刪除？'))return;
+  await api(`/admin/courses/${id}`,'DELETE');
+  showAlert('已刪除'); loadCourses(); loadSidebar();
+}
+
+async function sendCourseNow(id) {
+  if(!confirm('立即發送此課程提醒到所有群組？'))return;
+  const data=await api(`/admin/courses/${id}/send-now`,'POST');
+  showAlert(`✅ 已發送到 ${data.ok}/${data.total} 個群組`);
+}
+
+// ── Edit ──
+function openEdit(cJson) {
+  const c=JSON.parse(decodeURIComponent(cJson));
+  editCatId=c.category_id||null;
+  document.getElementById('e-id').value=c.id;
+  document.getElementById('e-title').value=c.title;
+  document.getElementById('e-date').value=c.course_date;
+  document.getElementById('e-time').value=c.course_time;
+  document.getElementById('e-loc').value=c.location||'';
+  document.getElementById('e-desc').value=c.description||'';
+  document.getElementById('e-img-url').value=c.image_url||'';
+  document.getElementById('e-rv').value=c.remind_value||30;
+  document.getElementById('e-ru').value=c.remind_unit||'days';
+  document.getElementById('e-iv').value=c.remind_interval_value||7;
+  document.getElementById('e-iu').value=c.remind_interval_unit||'days';
+  const img=document.getElementById('e-img-preview');
+  if(c.image_url){img.src=c.image_url;img.style.display='block';}else img.style.display='none';
+  buildCatSelector('e-cat-selector',editCatId,id=>editCatId=id);
+  updatePreview('e');
+  document.getElementById('edit-modal').style.display='block';
+}
+
+function closeEdit(){ document.getElementById('edit-modal').style.display='none'; }
+
+async function saveEdit() {
+  const id=document.getElementById('e-id').value;
+  const title=document.getElementById('e-title').value.trim();
+  const courseDate=document.getElementById('e-date').value.split('/').join('-');
+  if(!title||!courseDate){showAlert('請填寫課程名稱和日期','err');return;}
+  const data=await api(`/admin/courses/${id}`,'PUT',{
+    title, course_date:courseDate,
+    category_id:editCatId,
+    course_time:document.getElementById('e-time').value,
+    location:document.getElementById('e-loc').value,
+    description:document.getElementById('e-desc').value,
+    image_url:document.getElementById('e-img-url').value.trim(),
+    remind_value:parseInt(document.getElementById('e-rv').value)||30,
+    remind_unit:document.getElementById('e-ru').value,
+    remind_interval_value:parseInt(document.getElementById('e-iv').value)||7,
+    remind_interval_unit:document.getElementById('e-iu').value,
+  });
+  if(data.ok){showAlert(`✅ 已更新，${data.remind_count} 個提醒`);closeEdit();loadCourses();loadSidebar();}
+  else showAlert(data.error||'儲存失敗','err');
+}
+
+// ── Scheduled ──
+async function loadScheduled() {
+  const data=await api('/admin/scheduled');
+  const el=document.getElementById('sched-list');
+  if(!data.schedules||!data.schedules.length){el.innerHTML='<p style="color:#aaa;text-align:center;padding:16px;font-size:13px">尚未設定定時發送</p>';return;}
+  const secLabel=s=>{
+    if(s<60)return s+'秒';if(s<3600)return Math.round(s/60)+'分鐘';
+    if(s<86400)return Math.round(s/3600)+'小時';
+    if(s<2592000)return Math.round(s/86400)+'天';
+    if(s<31536000)return Math.round(s/2592000)+'月';
+    return Math.round(s/31536000)+'年';
+  };
+  let html='<table><tr><th>名稱</th><th>間隔</th><th>下次發送</th><th>狀態</th><th>操作</th></tr>';
+  for(const s of data.schedules){
+    const nextRun=new Date(s.next_run).toLocaleString('zh-TW',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+    const badge=s.active?'<span class="badge badge-green">啟用</span>':'<span class="badge badge-gray">暫停</span>';
+    html+=`<tr>
+      <td><strong>${s.title}</strong><br><sub>${s.content.slice(0,30)}${s.content.length>30?'...':''}</sub></td>
+      <td><sub>每 ${secLabel(s.interval_seconds)}</sub></td>
+      <td><sub>${nextRun}</sub></td>
+      <td>${badge}</td>
+      <td class="td-actions">
+        <button class="btn btn-blue btn-sm" onclick="sendScheduledNow(${s.id})">立即發</button>
+        <button class="btn btn-gray" onclick="toggleScheduled(${s.id},${s.active?0:1})">${s.active?'暫停':'啟用'}</button>
+        <button class="btn btn-red" onclick="deleteScheduled(${s.id})">刪除</button>
+      </td>
+    </tr>`;
+  }
+  html+='</table>';
+  el.innerHTML=html;
+}
+
+async function addScheduled() {
+  const title=document.getElementById('s-title').value.trim();
+  const content=document.getElementById('s-content').value.trim();
+  if(!title||!content){showAlert('請填寫名稱和內容','err');return;}
+  const iv=parseFloat(document.getElementById('s-iv').value)||1;
+  const iu=document.getElementById('s-iu').value;
+  const startVal=document.getElementById('s-start').value;
+  const data=await api('/admin/scheduled','POST',{
+    title, content:'📢 '+content,
+    image_url:document.getElementById('s-img-url').value.trim(),
+    interval_value:iv, interval_unit:iu,
+    start_time:startVal?new Date(startVal).toISOString():new Date().toISOString(),
+  });
+  if(data.ok){
+    showAlert('✅ 定時發送已設定');
+    ['s-title','s-content','s-img-url'].forEach(id=>document.getElementById(id).value='');
+    document.getElementById('s-img-preview').style.display='none';
+    loadScheduled(); loadSidebar();
+  } else showAlert(data.error||'新增失敗','err');
+}
+
+async function sendScheduledNow(id){
+  if(!confirm('立即發送？'))return;
+  const data=await api(`/admin/scheduled/${id}/send-now`,'POST');
+  showAlert(`✅ 已發送到 ${data.ok}/${data.total} 個群組`);
+  loadScheduled();
+}
+
+async function toggleScheduled(id,active){
+  await api(`/admin/scheduled/${id}`,'PUT',{active});
+  loadScheduled(); loadSidebar();
+}
+
+async function deleteScheduled(id){
+  if(!confirm('確定刪除？'))return;
+  await api(`/admin/scheduled/${id}`,'DELETE');
+  showAlert('已刪除'); loadScheduled(); loadSidebar();
+}
+
+// ── Send manual ──
+async function sendManual(){
+  const text=document.getElementById('manual-msg').value.trim();
+  const imgUrl=document.getElementById('manual-img-url').value.trim();
+  if(!text&&!imgUrl){showAlert('請輸入公告內容','err');return;}
+  const data=await api('/admin/send','POST',{text:text?'📢 '+text:'',image_url:imgUrl});
+  if(data.error){showAlert('發送失敗：'+data.error,'err');return;}
+  showAlert(`✅ 已發送到 ${data.ok}/${data.total} 個群組`);
+  document.getElementById('manual-msg').value='';
+  document.getElementById('manual-img-url').value='';
+  document.getElementById('manual-img-preview').style.display='none';
+}
+
+// ── AI Parse ──
+async function aiParse(){
+  const text=document.getElementById('ai-input').value.trim();
+  const imgUrl=document.getElementById('ai-img-url').value.trim();
+  if(!text&&!imgUrl){showAlert('請輸入課程描述或上傳圖片','err');return;}
+  const btn=document.getElementById('ai-btn');
+  btn.textContent='⏳ AI 解析中...'; btn.disabled=true;
+  const data=await api('/admin/ai-parse','POST',{text,image_url:imgUrl});
+  btn.textContent='🤖 AI 解析'; btn.disabled=false;
+  if(!data.ok){showAlert(data.error||'AI 解析失敗','err');return;}
+  const c=data.course;
+  const resultDiv=document.getElementById('ai-result');
+  resultDiv.style.display='block';
+  resultDiv.innerHTML=`
+    <p style="font-weight:700;color:#06C755;margin-bottom:12px;font-size:13px">✅ AI 解析結果，請確認後新增：</p>
+    <div class="grid">
+      <div><label>課程名稱</label><input id="ai-title" value="${c.title||''}"></div>
+      <div><label>日期</label><input id="ai-date" type="date" value="${c.course_date||''}"></div>
+      <div><label>時間</label><input id="ai-time" type="time" value="${c.course_time||'09:00'}"></div>
+      <div><label>地點</label><input id="ai-loc" value="${c.location||''}"></div>
+      <div class="full"><label>說明</label><input id="ai-desc" value="${c.description||''}"></div>
+      <div><label>提前提醒</label>
+        <div class="unit-row">
+          <input id="ai-rv" type="number" value="${c.remind_value||30}">
+          <select id="ai-ru">
+            <option value="seconds">秒</option><option value="minutes">分鐘</option>
+            <option value="hours">小時</option><option value="days" ${(c.remind_unit||'days')==='days'?'selected':''}>天</option>
+            <option value="months">月</option><option value="years">年</option>
+          </select>
+        </div>
+      </div>
+      <div><label>提醒間隔</label>
+        <div class="unit-row">
+          <input id="ai-iv" type="number" value="${c.remind_interval_value||7}">
+          <select id="ai-iu">
+            <option value="seconds">秒</option><option value="minutes">分鐘</option>
+            <option value="hours">小時</option><option value="days" ${(c.remind_interval_unit||'days')==='days'?'selected':''}>天</option>
+            <option value="months">月</option><option value="years">年</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="btn btn-green" onclick="aiConfirmAdd()">✅ 確認新增到排程</button>
+      <button class="btn btn-gray" onclick="document.getElementById('ai-result').style.display='none'">取消</button>
+    </div>`;
+}
+
+async function aiConfirmAdd(){
+  const courseDate=document.getElementById('ai-date').value.split('/').join('-');
+  const data=await api('/admin/courses','POST',{
+    title:document.getElementById('ai-title').value.trim(),
+    course_date:courseDate,
+    course_time:document.getElementById('ai-time').value,
+    location:document.getElementById('ai-loc').value,
+    description:document.getElementById('ai-desc').value,
+    image_url:document.getElementById('ai-img-url').value.trim()||'',
+    category_id:selectedCatId,
+    remind_value:parseInt(document.getElementById('ai-rv').value)||30,
+    remind_unit:document.getElementById('ai-ru').value,
+    remind_interval_value:parseInt(document.getElementById('ai-iv').value)||7,
+    remind_interval_unit:document.getElementById('ai-iu').value,
+  });
+  if(data.ok){
+    showAlert(`✅ 課程已新增，${data.remind_count} 個提醒`);
+    document.getElementById('ai-input').value='';
+    document.getElementById('ai-img-url').value='';
+    document.getElementById('ai-img-preview').style.display='none';
+    document.getElementById('ai-result').style.display='none';
+    loadCourses(); loadSidebar();
+  } else showAlert(data.error||'新增失敗','err');
+}
+
+// ── Sidebar ──
+async function loadSidebar(){
+  loadSidebarCourses();
+  loadSidebarScheduled();
+}
+
+async function loadSidebarCourses(){
+  const data=await api('/admin/courses');
+  const el=document.getElementById('sb-courses');
+  if(!data.courses||!data.courses.length){el.innerHTML='<p style="font-size:11px;color:#ccc;padding:4px 0">尚無課程</p>';return;}
+  const today=new Date(); today.setHours(0,0,0,0);
+  const upcoming=data.courses.filter(c=>new Date(c.course_date)>=today).slice(0,10);
+  const past=data.courses.filter(c=>new Date(c.course_date)<today).slice(0,3);
+  let html='';
+  for(const c of upcoming){
+    const cd=new Date(c.course_date);
+    const daysLeft=Math.round((cd-today)/86400000);
+    const badge=daysLeft===0?'<span class="si-badge badge-today">今天</span>':daysLeft<=7?`<span class="si-badge badge-soon">${daysLeft}天後</span>`:`<span class="si-badge badge-ok">${daysLeft}天</span>`;
+    html+=`<div class="si" onclick="document.getElementById('course-list').scrollIntoView({behavior:'smooth'})">${badge}<div class="si-title">${c.title}</div><div class="si-sub">${c.course_date} ${c.course_time}${c.location?' · '+c.location.slice(0,8):''}</div></div>`;
+  }
+  if(past.length){
+    html+='<p style="font-size:10px;color:#ccc;margin:8px 0 4px">已結束</p>';
+    for(const c of past) html+=`<div class="si" style="opacity:.5"><span class="si-badge badge-past">已過</span><div class="si-title">${c.title}</div><div class="si-sub">${c.course_date}</div></div>`;
+  }
+  el.innerHTML=html||'<p style="font-size:11px;color:#ccc">尚無課程</p>';
+}
+
+async function loadSidebarScheduled(){
+  const data=await api('/admin/scheduled');
+  const el=document.getElementById('sb-scheduled');
+  if(!data.schedules||!data.schedules.length){el.innerHTML='<p style="font-size:11px;color:#ccc;padding:4px 0">尚無定時發送</p>';return;}
+  const secLabel=s=>{if(s<60)return s+'秒';if(s<3600)return Math.round(s/60)+'分';if(s<86400)return Math.round(s/3600)+'時';if(s<2592000)return Math.round(s/86400)+'天';return Math.round(s/2592000)+'月';};
+  let html='';
+  for(const s of data.schedules){
+    const nextRun=new Date(s.next_run);
+    const now=new Date();
+    const secsLeft=Math.round((nextRun-now)/1000);
+    const nextStr=secsLeft<=0?'即將發送':secsLeft<3600?Math.round(secsLeft/60)+'分鐘後':secsLeft<86400?Math.round(secsLeft/3600)+'小時後':nextRun.toLocaleDateString('zh-TW');
+    const badge=s.active?'<span class="si-badge badge-active">啟用</span>':'<span class="si-badge badge-paused">暫停</span>';
+    html+=`<div class="si" onclick="document.getElementById('body-sched').classList.remove('hidden');document.getElementById('body-sched').scrollIntoView({behavior:'smooth'})">${badge}<div class="si-title">${s.title}</div><div class="si-sub">每${secLabel(s.interval_seconds)} · 下次：${nextStr}</div></div>`;
+  }
+  el.innerHTML=html;
+}
+
+init();
+</script>
+</body>
+</html>
