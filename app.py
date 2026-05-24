@@ -61,6 +61,17 @@ def init_db():
             sent_at TEXT NOT NULL,
             group_count INTEGER DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS scheduled_broadcasts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            image_url TEXT DEFAULT '',
+            interval_hours REAL NOT NULL DEFAULT 24,
+            start_time TEXT NOT NULL,
+            next_run TEXT NOT NULL,
+            active INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL
+        );
     """)
     # 加入預設分類
     for cat in [("招商活動", "#FF6B35"), ("系統會議", "#1A73E8"), ("課程培訓", "#06C755"), ("其他", "#9E9E9E")]:
@@ -276,6 +287,64 @@ td{padding:10px 12px;border-bottom:1px solid #f0f0f0;vertical-align:middle}
   </div>
 </div>
 
+
+
+<!-- 定時發送 -->
+<div class="card">
+  <h2 onclick="toggle('sched-body')">⏰ 定時發送管理 <span>▼</span></h2>
+  <div id="sched-body" class="card-body">
+    <p style="font-size:13px;color:#888;margin-bottom:16px">設定自動定時發送的公告，例如每天早安訊息、每週通知等</p>
+    
+    <!-- 新增定時發送 -->
+    <div style="border:1px solid #e8f5e9;border-radius:10px;padding:16px;margin-bottom:16px">
+      <p style="font-weight:600;color:#06C755;margin-bottom:12px">➕ 新增定時發送</p>
+      <div class="grid">
+        <div class="full"><label>名稱（備註用）</label><input id="s-title" placeholder="例：每日早安訊息"></div>
+        <div class="full"><label>公告內容</label><textarea id="s-content" placeholder="例：📢 早安！今天也請準時上工 ☀️" style="min-height:70px"></textarea></div>
+        <div class="full"><label>圖片網址（選填）</label><input id="s-img" type="url" placeholder="https://example.com/image.jpg"></div>
+        <div>
+          <label>發送間隔</label>
+          <select id="s-interval">
+            <option value="1">每 1 小時</option>
+            <option value="2">每 2 小時</option>
+            <option value="4">每 4 小時</option>
+            <option value="6">每 6 小時</option>
+            <option value="12">每 12 小時</option>
+            <option value="24" selected>每 24 小時（每天）</option>
+            <option value="48">每 2 天</option>
+            <option value="72">每 3 天</option>
+            <option value="168">每週</option>
+            <option value="custom">自訂</option>
+          </select>
+        </div>
+        <div id="custom-interval-div" style="display:none">
+          <label>自訂間隔（小時）</label>
+          <input id="s-custom-hours" type="number" min="0.5" step="0.5" value="24" placeholder="小時數">
+        </div>
+        <div>
+          <label>第一次發送時間</label>
+          <input id="s-start" type="datetime-local">
+        </div>
+      </div>
+      <button class="btn btn-green" style="margin-top:12px" onclick="addScheduled()">➕ 新增定時發送</button>
+    </div>
+
+    <!-- 定時發送列表 -->
+    <div id="sched-list"><p style="color:#aaa;text-align:center;padding:16px">載入中...</p></div>
+  </div>
+</div>
+<!-- AI 新增課程 -->
+<div class="card">
+  <h2 onclick="toggle('ai-body')">🤖 AI 智慧新增課程 <span>▼</span></h2>
+  <div id="ai-body" class="card-body">
+    <p style="font-size:13px;color:#888;margin-bottom:12px">用自然語言描述課程，AI 自動解析並填入表單</p>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <textarea id="ai-input" placeholder="例：下個月20號早上十點在台北信義區有招商說明會，請幫我設定提醒" style="flex:1;min-height:70px"></textarea>
+    </div>
+    <button class="btn btn-green" onclick="aiParse()" id="ai-btn">🤖 AI 解析</button>
+    <div id="ai-result" style="display:none;margin-top:16px;padding:16px;background:#f8f9fa;border-radius:8px;font-size:14px"></div>
+  </div>
+</div>
 <!-- 課程列表（依分類展開） -->
 <div class="card">
   <h2>📅 課程列表</h2>
@@ -372,6 +441,7 @@ async function loadAll(){
   await loadCategories();
   await loadCourses();
   loadGroupCount();
+  loadScheduled();
 }
 
 async function loadGroupCount(){
@@ -539,6 +609,156 @@ async function sendManual(){
 }
 
 
+
+
+
+// 自訂間隔顯示
+document.getElementById('s-interval').addEventListener('change', function(){
+  document.getElementById('custom-interval-div').style.display = this.value==='custom' ? 'block' : 'none';
+});
+
+// 預設第一次發送時間為明天早上8點
+(function(){
+  const d = new Date();
+  d.setDate(d.getDate()+1);
+  d.setHours(8,0,0,0);
+  const pad = n => String(n).padStart(2,'0');
+  document.getElementById('s-start').value = 
+    `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+})();
+
+async function loadScheduled() {
+  const data = await api('/admin/scheduled');
+  const el = document.getElementById('sched-list');
+  if (!data.schedules || !data.schedules.length) {
+    el.innerHTML = '<p style="color:#aaa;text-align:center;padding:16px">尚未設定定時發送</p>';
+    return;
+  }
+  const intervalLabel = h => {
+    if (h < 1) return `每 ${h*60} 分鐘`;
+    if (h === 1) return '每 1 小時';
+    if (h === 24) return '每天';
+    if (h === 168) return '每週';
+    return `每 ${h} 小時`;
+  };
+  let html = '<table><tr><th>名稱</th><th>間隔</th><th>下次發送</th><th>狀態</th><th>操作</th></tr>';
+  for (const s of data.schedules) {
+    const nextRun = new Date(s.next_run).toLocaleString('zh-TW');
+    const statusBadge = s.active 
+      ? '<span class="badge badge-green">啟用中</span>'
+      : '<span class="badge badge-gray">已暫停</span>';
+    html += `<tr>
+      <td><strong>${s.title}</strong><br><span class="sub">${s.content.slice(0,30)}${s.content.length>30?'...':''}</span></td>
+      <td><span class="sub">${intervalLabel(s.interval_hours)}</span></td>
+      <td><span class="sub">${nextRun}</span></td>
+      <td>${statusBadge}</td>
+      <td style="display:flex;gap:4px;flex-wrap:wrap">
+        <button class="btn btn-blue" style="padding:6px 10px;font-size:12px" onclick="sendScheduledNow(${s.id})">立即發</button>
+        <button class="btn btn-gray" style="padding:6px 10px;font-size:12px" onclick="toggleScheduled(${s.id},${s.active?0:1})">${s.active?'暫停':'啟用'}</button>
+        <button class="btn btn-red" onclick="deleteScheduled(${s.id})">刪除</button>
+      </td>
+    </tr>`;
+  }
+  html += '</table>';
+  el.innerHTML = html;
+}
+
+async function addScheduled() {
+  const title = document.getElementById('s-title').value.trim();
+  const content_text = document.getElementById('s-content').value.trim();
+  if (!title || !content_text) { showAlert('請填寫名稱和內容', 'err'); return; }
+  const intervalSel = document.getElementById('s-interval').value;
+  const interval_hours = intervalSel === 'custom' 
+    ? parseFloat(document.getElementById('s-custom-hours').value) 
+    : parseFloat(intervalSel);
+  const startVal = document.getElementById('s-start').value;
+  const data = await api('/admin/scheduled', 'POST', {
+    title, content: '📢 ' + content_text,
+    image_url: document.getElementById('s-img').value.trim(),
+    interval_hours,
+    start_time: startVal ? new Date(startVal).toISOString() : new Date().toISOString(),
+  });
+  if (data.ok) {
+    showAlert('✅ 定時發送已設定');
+    document.getElementById('s-title').value = '';
+    document.getElementById('s-content').value = '';
+    document.getElementById('s-img').value = '';
+    loadScheduled();
+  } else showAlert(data.error || '新增失敗', 'err');
+}
+
+async function sendScheduledNow(id) {
+  if (!confirm('立即發送此定時公告？')) return;
+  const data = await api(`/admin/scheduled/${id}/send-now`, 'POST');
+  showAlert(`✅ 已發送到 ${data.ok}/${data.total} 個群組`);
+}
+
+async function toggleScheduled(id, active) {
+  await api(`/admin/scheduled/${id}`, 'PUT', { active });
+  loadScheduled();
+}
+
+async function deleteScheduled(id) {
+  if (!confirm('確定刪除此定時發送？')) return;
+  await api(`/admin/scheduled/${id}`, 'DELETE');
+  showAlert('已刪除');
+  loadScheduled();
+}
+
+async function aiParse() {
+  const text = document.getElementById('ai-input').value.trim();
+  if (!text) { showAlert('請輸入課程描述', 'err'); return; }
+  const btn = document.getElementById('ai-btn');
+  btn.textContent = '⏳ AI 解析中...';
+  btn.disabled = true;
+  
+  const data = await api('/admin/ai-parse', 'POST', { text });
+  btn.textContent = '🤖 AI 解析';
+  btn.disabled = false;
+  
+  if (!data.ok) { showAlert(data.error || 'AI 解析失敗', 'err'); return; }
+  
+  const c = data.course;
+  const resultDiv = document.getElementById('ai-result');
+  resultDiv.style.display = 'block';
+  resultDiv.innerHTML = `
+    <p style="font-weight:600;color:#06C755;margin-bottom:12px">✅ AI 解析結果，請確認後新增：</p>
+    <div class="grid">
+      <div><label>課程名稱</label><input id="ai-title" value="${c.title||''}"></div>
+      <div><label>日期</label><input id="ai-date" type="date" value="${c.course_date||''}"></div>
+      <div><label>時間</label><input id="ai-time" type="time" value="${c.course_time||'09:00'}"></div>
+      <div><label>地點</label><input id="ai-loc" value="${c.location||''}"></div>
+      <div class="full"><label>說明</label><input id="ai-desc" value="${c.description||''}"></div>
+      <div><label>提前幾天提醒</label><input id="ai-before" type="number" value="${c.remind_days_before||30}"></div>
+      <div><label>每隔幾天</label><input id="ai-interval" type="number" value="${c.remind_interval_days||7}"></div>
+    </div>
+    <button class="btn btn-green" style="margin-top:12px" onclick="aiConfirmAdd()">✅ 確認新增到排程</button>
+    <button class="btn btn-gray" style="margin-top:12px;margin-left:8px" onclick="document.getElementById('ai-result').style.display='none'">取消</button>
+  `;
+}
+
+async function aiConfirmAdd() {
+  const courseDate = document.getElementById('ai-date').value.split('/').join('-');
+  const data = await api('/admin/courses', 'POST', {
+    title: document.getElementById('ai-title').value.trim(),
+    course_date: courseDate,
+    course_time: document.getElementById('ai-time').value,
+    location: document.getElementById('ai-loc').value,
+    description: document.getElementById('ai-desc').value,
+    image_url: '',
+    category_id: selectedCatId,
+    remind_days_before: parseInt(document.getElementById('ai-before').value)||30,
+    remind_interval_days: parseInt(document.getElementById('ai-interval').value)||7,
+  });
+  if (data.ok) {
+    showAlert(`✅ 課程已新增，產生 ${data.remind_count} 個提醒日期`);
+    document.getElementById('ai-input').value = '';
+    document.getElementById('ai-result').style.display = 'none';
+    loadCourses();
+  } else {
+    showAlert(data.error || '新增失敗', 'err');
+  }
+}
 
 async function sendCourseNow(id) {
   if (!confirm('確定立即發送此課程提醒到所有群組？')) return;
@@ -823,6 +1043,130 @@ def admin_send():
     conn.close()
     return jsonify({"ok":ok,"total":total})
 
+
+@app.route("/admin/ai-parse", methods=["POST"])
+def ai_parse_course():
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    text = request.json.get("text","").strip()
+    if not text: return jsonify({"ok":False,"error":"請輸入課程描述"})
+    
+    today = date.today().isoformat()
+    prompt = f"""今天是 {today}。
+請從以下文字中提取課程資訊，回傳 JSON 格式（只回傳 JSON，不要其他文字）：
+{{
+  "title": "課程名稱",
+  "course_date": "YYYY-MM-DD",
+  "course_time": "HH:MM",
+  "location": "地點或空字串",
+  "description": "說明或空字串",
+  "remind_days_before": 30,
+  "remind_interval_days": 7
+}}
+
+用戶輸入：{text}
+
+注意：
+- 如果是「下個月15號」請計算實際日期
+- 時間預設 09:00
+- remind_days_before 預設 30
+- remind_interval_days 預設 7"""
+
+    try:
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"Content-Type": "application/json"},
+            json={
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 500,
+                "messages": [{"role": "user", "content": prompt}]
+            }
+        )
+        result = resp.json()
+        ai_text = result["content"][0]["text"].strip()
+        # 清除可能的 markdown
+        if "```" in ai_text:
+            ai_text = ai_text.split("```")[1]
+            if ai_text.startswith("json"):
+                ai_text = ai_text[4:]
+        course_data = json.loads(ai_text.strip())
+        return jsonify({"ok": True, "course": course_data})
+    except Exception as e:
+        logger.error(f"AI parse error: {e}")
+        return jsonify({"ok": False, "error": f"AI 解析失敗：{str(e)}"})
+
+
+@app.route("/admin/scheduled", methods=["GET"])
+def get_scheduled():
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM scheduled_broadcasts ORDER BY created_at DESC").fetchall()
+    conn.close()
+    return jsonify({"schedules": [dict(r) for r in rows]})
+
+@app.route("/admin/scheduled", methods=["POST"])
+def add_scheduled():
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    d = request.json
+    title = d.get("title","").strip()
+    content_text = d.get("content","").strip()
+    if not title or not content_text: return jsonify({"ok":False,"error":"請填寫標題和內容"})
+    interval_hours = float(d.get("interval_hours", 24))
+    now = datetime.now()
+    start_time = d.get("start_time", now.isoformat())
+    # 計算第一次發送時間
+    next_run = datetime.fromisoformat(start_time).isoformat()
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO scheduled_broadcasts (title,content,image_url,interval_hours,start_time,next_run,active,created_at) VALUES (?,?,?,?,?,?,1,?)",
+        (title, content_text, d.get("image_url",""), interval_hours, start_time, next_run, now.isoformat())
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok":True})
+
+@app.route("/admin/scheduled/<int:sid>", methods=["PUT"])
+def update_scheduled(sid):
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    d = request.json
+    conn = get_db()
+    if "active" in d:
+        conn.execute("UPDATE scheduled_broadcasts SET active=? WHERE id=?", (d["active"], sid))
+    else:
+        conn.execute("""UPDATE scheduled_broadcasts SET title=?,content=?,image_url=?,interval_hours=? WHERE id=?""",
+            (d.get("title"), d.get("content"), d.get("image_url",""), float(d.get("interval_hours",24)), sid))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok":True})
+
+@app.route("/admin/scheduled/<int:sid>", methods=["DELETE"])
+def delete_scheduled(sid):
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    conn = get_db()
+    conn.execute("DELETE FROM scheduled_broadcasts WHERE id=?", (sid,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok":True})
+
+@app.route("/admin/scheduled/<int:sid>/send-now", methods=["POST"])
+def send_scheduled_now(sid):
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    conn = get_db()
+    row = conn.execute("SELECT * FROM scheduled_broadcasts WHERE id=?", (sid,)).fetchone()
+    conn.close()
+    if not row: return jsonify({"ok":False,"error":"找不到排程"})
+    messages = []
+    if row["image_url"]:
+        messages.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
+    messages.append({"type":"text","text":row["content"]})
+    ok, total = push_to_groups(messages)
+    # 更新下次發送時間
+    next_run = (datetime.now() + timedelta(hours=row["interval_hours"])).isoformat()
+    conn = get_db()
+    conn.execute("UPDATE scheduled_broadcasts SET next_run=? WHERE id=?", (next_run, sid))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok":ok,"total":total})
+
 @app.route("/admin/check-reminders", methods=["POST"])
 def trigger_reminders():
     if request.headers.get("X-Admin-Pass") != ADMIN_PASSWORD:
@@ -852,13 +1196,70 @@ def handle_text(event):
     if text.startswith("/公告 "):
         ok, total = push_text_to_groups(f"📢 {text[4:].strip()}")
         reply_message(reply_token, f"✅ 已發送到 {ok}/{total} 個群組")
+    elif text.startswith("/新增課程 ") or text.startswith("/加課 "):
+        # AI 解析課程
+        desc = text.split(" ", 1)[1].strip()
+        reply_message(reply_token, "⏳ AI 解析中，請稍候...")
+        try:
+            today = date.today().isoformat()
+            prompt = f"""今天是 {today}。
+請從以下文字提取課程資訊，只回傳 JSON：
+{{"title":"課程名稱","course_date":"YYYY-MM-DD","course_time":"HH:MM","location":"地點","description":"說明","remind_days_before":30,"remind_interval_days":7}}
+用戶輸入：{desc}"""
+            resp = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"Content-Type": "application/json"},
+                json={"model":"claude-sonnet-4-20250514","max_tokens":500,
+                      "messages":[{"role":"user","content":prompt}]}
+            )
+            ai_text = resp.json()["content"][0]["text"].strip()
+            if "```" in ai_text:
+                ai_text = ai_text.split("```")[1]
+                if ai_text.startswith("json"): ai_text = ai_text[4:]
+            c = json.loads(ai_text.strip())
+            conn = get_db()
+            cur = conn.execute(
+                "INSERT INTO courses (title,course_date,course_time,location,description,image_url,remind_days_before,remind_interval_days,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (c["title"], c["course_date"], c.get("course_time","09:00"),
+                 c.get("location",""), c.get("description",""), "",
+                 c.get("remind_days_before",30), c.get("remind_interval_days",7),
+                 datetime.now().isoformat())
+            )
+            course_id = cur.lastrowid
+            conn.commit()
+            conn.close()
+            dates = generate_reminders(course_id, c["course_date"],
+                                       c.get("remind_days_before",30),
+                                       c.get("remind_interval_days",7))
+            reply_message(reply_token,
+                f"✅ 課程已新增！\n\n"
+                f"📌 {c['title']}\n"
+                f"📅 {c['course_date']} {c.get('course_time','09:00')}\n"
+                f"📍 {c.get('location','') or '未指定'}\n\n"
+                f"🔔 已設定 {len(dates)} 個提醒日期")
+        except Exception as e:
+            reply_message(reply_token, f"❌ AI 解析失敗，請至網頁後台手動新增\n{str(e)[:50]}")
+    elif text == "/課程清單":
+        conn = get_db()
+        rows = conn.execute("SELECT title, course_date FROM courses ORDER BY course_date ASC LIMIT 10").fetchall()
+        conn.close()
+        if not rows:
+            reply_message(reply_token, "目前沒有排程課程")
+        else:
+            lines = [f"📅 {r['course_date']} {r['title']}" for r in rows]
+            reply_message(reply_token, "課程清單：\n" + "\n".join(lines))
     elif text == "/群組清單":
         groups = get_all_group_ids()
         reply_message(reply_token, f"已連接 {len(groups)} 個群組")
     elif text in ("/說明","/help"):
         reply_message(reply_token,
-            "📋 指令\n\n/公告 [內容] 立即發公告\n/群組清單 查看群組\n\n"
-            "課程管理後台：\nhttps://ipapalinebot.onrender.com/admin")
+            "📋 指令說明\n\n"
+            "/公告 [內容] 立即發公告\n"
+            "/新增課程 [描述] AI智慧新增課程\n"
+            "  例：/新增課程 下個月15號早上十點台北招商說明會\n"
+            "/課程清單 查看所有課程\n"
+            "/群組清單 查看群組\n\n"
+            "🌐 網頁後台：\nhttps://ipapalinebot.onrender.com/admin")
 
 def handle_join(event):
     if event["source"]["type"] == "group":
