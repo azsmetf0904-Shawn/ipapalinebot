@@ -210,6 +210,15 @@ td{padding:10px 12px;border-bottom:1px solid #f0f0f0;vertical-align:middle}
 .cat-tag{padding:4px 12px;border-radius:20px;font-size:13px;cursor:pointer;border:2px solid transparent}
 .cat-tag.active{border-color:#333}
 @media(max-width:600px){.grid{grid-template-columns:1fr}}
+.sidebar-item{padding:8px 10px;border-radius:8px;margin-bottom:6px;font-size:13px;cursor:pointer;border:1px solid #f0f0f0;transition:background .15s}
+.sidebar-item:hover{background:#f8f9fa}
+.sidebar-item .si-title{font-weight:600;color:#333;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sidebar-item .si-sub{font-size:11px;color:#999}
+.sidebar-item .si-badge{display:inline-block;padding:1px 6px;border-radius:10px;font-size:10px;font-weight:600;float:right}
+.badge-active{background:#e8f5e9;color:#2e7d32}
+.badge-past{background:#f5f5f5;color:#999}
+.badge-soon{background:#fff3e0;color:#e65100}
+@media(max-width:768px){#sidebar{display:none}}
 </style>
 </head>
 <body>
@@ -437,11 +446,82 @@ function previewImg(inputId,previewId){
   else{img.style.display='none';}
 }
 
+
+async function loadSidebar() {
+  await loadSidebarCourses();
+  await loadSidebarScheduled();
+}
+
+async function loadSidebarCourses() {
+  const data = await api('/admin/courses');
+  const el = document.getElementById('sidebar-courses');
+  if (!data.courses || !data.courses.length) {
+    el.innerHTML = '<p style="font-size:12px;color:#bbb;padding:4px 8px">尚無課程</p>';
+    return;
+  }
+  const today = new Date().toISOString().slice(0,10);
+  // 只顯示未來課程，最多8筆
+  const upcoming = data.courses.filter(c => c.course_date >= today).slice(0,8);
+  const past = data.courses.filter(c => c.course_date < today).slice(0,3);
+  
+  let html = '';
+  for (const c of upcoming) {
+    const cd = new Date(c.course_date);
+    const today2 = new Date(); today2.setHours(0,0,0,0);
+    const daysLeft = Math.round((cd - today2) / 86400000);
+    const badge = daysLeft === 0 ? '<span class="si-badge badge-soon">今天</span>'
+      : daysLeft <= 7 ? `<span class="si-badge badge-soon">${daysLeft}天後</span>`
+      : `<span class="si-badge badge-active">${daysLeft}天</span>`;
+    html += `<div class="sidebar-item" onclick="document.getElementById('course-list').scrollIntoView({behavior:'smooth'})">
+      ${badge}
+      <div class="si-title">${c.title}</div>
+      <div class="si-sub">${c.course_date} ${c.course_time}${c.location?' · '+c.location:''}</div>
+    </div>`;
+  }
+  if (past.length) {
+    html += '<p style="font-size:11px;color:#bbb;margin:8px 4px 4px">已結束</p>';
+    for (const c of past) {
+      html += `<div class="sidebar-item" style="opacity:.5">
+        <span class="si-badge badge-past">已過</span>
+        <div class="si-title">${c.title}</div>
+        <div class="si-sub">${c.course_date}</div>
+      </div>`;
+    }
+  }
+  if (!upcoming.length && !past.length) html = '<p style="font-size:12px;color:#bbb;padding:4px 8px">尚無課程</p>';
+  el.innerHTML = html;
+}
+
+async function loadSidebarScheduled() {
+  const data = await api('/admin/scheduled');
+  const el = document.getElementById('sidebar-scheduled');
+  if (!data.schedules || !data.schedules.length) {
+    el.innerHTML = '<p style="font-size:12px;color:#bbb;padding:4px 8px">尚無定時發送</p>';
+    return;
+  }
+  const intervalLabel = h => h===1?'每小時':h===24?'每天':h===168?'每週':`每${h}小時`;
+  let html = '';
+  for (const s of data.schedules) {
+    const nextRun = new Date(s.next_run);
+    const now = new Date();
+    const hoursLeft = Math.round((nextRun - now) / 3600000);
+    const nextStr = hoursLeft <= 0 ? '即將發送' : hoursLeft < 24 ? `${hoursLeft}小時後` : nextRun.toLocaleDateString('zh-TW');
+    const activeColor = s.active ? '#1a73e8' : '#bbb';
+    html += `<div class="sidebar-item" onclick="document.getElementById('sched-body').scrollIntoView({behavior:'smooth'})">
+      <span class="si-badge" style="background:${s.active?'#e8f0fe':'#f5f5f5'};color:${activeColor}">${s.active?'啟用':'暫停'}</span>
+      <div class="si-title">${s.title}</div>
+      <div class="si-sub">${intervalLabel(s.interval_hours)} · 下次：${nextStr}</div>
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+
 async function loadAll(){
   await loadCategories();
   await loadCourses();
   loadGroupCount();
   loadScheduled();
+  loadSidebar();
 }
 
 async function loadGroupCount(){
@@ -583,6 +663,7 @@ async function addCourse(){
   if(data.ok){
     showAlert(`✅ 課程已新增，產生 ${data.remind_count} 個提醒日期`);
     ['f-title','f-date','f-loc','f-desc','f-img'].forEach(id=>document.getElementById(id).value='');
+    loadSidebar();
     document.getElementById('f-img-preview').style.display='none';
     document.getElementById('preview-hint').style.display='none';
     selectedCatId=null;
@@ -593,7 +674,7 @@ async function addCourse(){
 async function deleteCourse(id){
   if(!confirm('確定刪除？'))return;
   const data=await api(`/admin/courses/${id}`,'DELETE');
-  if(data.ok){showAlert('已刪除');loadCourses();}
+  if(data.ok){showAlert('已刪除');loadCourses();loadSidebar();}
 }
 
 async function sendManual(){
@@ -681,6 +762,7 @@ async function addScheduled() {
   if (data.ok) {
     showAlert('✅ 定時發送已設定');
     document.getElementById('s-title').value = '';
+    loadSidebar();
     document.getElementById('s-content').value = '';
     document.getElementById('s-img').value = '';
     loadScheduled();
@@ -703,6 +785,7 @@ async function deleteScheduled(id) {
   await api(`/admin/scheduled/${id}`, 'DELETE');
   showAlert('已刪除');
   loadScheduled();
+  loadSidebar();
 }
 
 async function aiParse() {
@@ -877,6 +960,7 @@ init();
     </div>
   </div>
 </div>
+</div></div></div>
 </body>
 </html>"""
 
