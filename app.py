@@ -486,7 +486,7 @@ async function loadCourses(){
         <td>${badge}</td>
         <td style="display:flex;gap:4px;flex-wrap:wrap">
           <button class="btn btn-gray" onclick="openEdit(${JSON.stringify(c).split('&quot;').join('&amp;quot;').split('"').join('&quot;')})">編輯</button>
-          <button class="btn btn-blue" style="padding:6px 10px;font-size:12px" onclick="sendCourseNow(${c.id},'${c.title.replace(/'/g,\"\\\\'\")}')">立即發送</button>
+          <button class="btn btn-blue" style="padding:6px 10px;font-size:12px" onclick="sendCourseNow(${c.id})">立即發送</button>
           <button class="btn btn-red" onclick="deleteCourse(${c.id})">刪除</button>
         </td>
       </tr>`;
@@ -540,11 +540,11 @@ async function sendManual(){
 
 
 
-async function sendCourseNow(id, title) {
-  if (!confirm(`立即發送「${title}」的課程提醒到所有群組？`)) return;
+async function sendCourseNow(id) {
+  if (!confirm('確定立即發送此課程提醒到所有群組？')) return;
   const data = await api(`/admin/courses/${id}/send-now`, 'POST');
   if (data.error) { showAlert('發送失敗：' + data.error, 'err'); return; }
-  showAlert(`✅ 已發送「${title}」到 ${data.ok}/${data.total} 個群組`);
+  showAlert(`✅ 已發送到 ${data.ok}/${data.total} 個群組`);
 }
 
 let editCatId = null;
