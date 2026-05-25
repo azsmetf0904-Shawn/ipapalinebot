@@ -119,7 +119,7 @@ sub{font-size:11px;color:#999}
   <span style="font-size:24px">📢</span>
   <div style="flex:1">
     <h1>ipapa 課程公告管理</h1>
-    <p id="grp-count">連接中...</p>
+    <p id="grp-count">連接中...</p><p id="tz-display" style="font-size:11px;opacity:.75"></p>
   </div>
   <button class="btn-logout" onclick="doLogout()">登出</button>
 </div>
@@ -145,6 +145,58 @@ sub{font-size:11px;color:#999}
 
   <!-- Main -->
   <div class="main">
+
+
+    <!-- 時區設定 -->
+    <div class="card">
+      <div class="card-header" onclick="toggleCard('tz')">
+        <h2>🌏 時區設定</h2>
+        <span class="toggle-icon" id="icon-tz">▼</span>
+      </div>
+      <div class="card-body hidden" id="body-tz">
+        <div id="tz-current" style="background:#f8fffe;border:1px solid #e8f5e9;border-radius:8px;padding:12px;margin-bottom:12px;font-size:13px">
+          載入中...
+        </div>
+        <div class="grid">
+          <div>
+            <label>選擇時區</label>
+            <select id="tz-select" onchange="document.getElementById('tz-custom').style.display=this.value==='custom'?'block':'none'">
+              <optgroup label="亞洲">
+                <option value="Asia/Taipei">🇹🇼 台灣 (UTC+8)</option>
+                <option value="Asia/Hong_Kong">🇭🇰 香港 (UTC+8)</option>
+                <option value="Asia/Shanghai">🇨🇳 上海 (UTC+8)</option>
+                <option value="Asia/Tokyo">🇯🇵 東京 (UTC+9)</option>
+                <option value="Asia/Seoul">🇰🇷 首爾 (UTC+9)</option>
+                <option value="Asia/Singapore">🇸🇬 新加坡 (UTC+8)</option>
+                <option value="Asia/Bangkok">🇹🇭 曼谷 (UTC+7)</option>
+                <option value="Asia/Kuala_Lumpur">🇲🇾 吉隆坡 (UTC+8)</option>
+              </optgroup>
+              <optgroup label="美洲">
+                <option value="America/New_York">🇺🇸 紐約 (EST)</option>
+                <option value="America/Los_Angeles">🇺🇸 洛杉磯 (PST)</option>
+                <option value="America/Chicago">🇺🇸 芝加哥 (CST)</option>
+              </optgroup>
+              <optgroup label="歐洲">
+                <option value="Europe/London">🇬🇧 倫敦 (GMT)</option>
+                <option value="Europe/Paris">🇫🇷 巴黎 (CET)</option>
+              </optgroup>
+              <optgroup label="其他">
+                <option value="UTC">🌐 UTC</option>
+                <option value="custom">✏️ 自訂...</option>
+              </optgroup>
+            </select>
+          </div>
+          <div id="tz-custom" style="display:none">
+            <label>自訂時區名稱</label>
+            <input id="tz-custom-input" placeholder="例：Asia/Taipei">
+          </div>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+          <button class="btn btn-green btn-sm" onclick="saveTimezone()">✅ 儲存時區</button>
+          <span style="font-size:12px;color:#aaa">注意：重新啟動後需在 Render 環境變數設定 TIMEZONE 才能永久生效</span>
+        </div>
+      </div>
+    </div>
 
     <!-- 立即發公告 -->
     <div class="card">
@@ -484,6 +536,7 @@ function handleDrop(e, urlId, previewId) {
 
 // ── Load all ──
 async function loadAll() {
+  loadTimezone();
   loadGroupCount();
   await loadCategories();
   loadCourses();
@@ -498,6 +551,12 @@ async function loadAll() {
 async function loadGroupCount() {
   const data = await api('/admin/groups');
   document.getElementById('grp-count').textContent = data.count!==undefined ? `已連接 ${data.count} 個群組` : 'LINE 公告機器人';
+  // Also refresh timezone display
+  api('/admin/timezone').then(tz => {
+    if (tz.current_time) {
+      document.getElementById('tz-display').textContent = tz.timezone + ' · ' + tz.current_time.slice(11,16);
+    }
+  });
 }
 
 // ── Categories ──
@@ -897,6 +956,41 @@ async function loadSidebarScheduled(){
   el.innerHTML=html;
 }
 
+
+// ── Timezone ──
+async function loadTimezone() {
+  const data = await api('/admin/timezone');
+  if (data.timezone) {
+    document.getElementById('tz-current').innerHTML = 
+      `<strong>目前時區：</strong>${data.timezone}<br><strong>目前時間：</strong>${data.current_time}`;
+    const sel = document.getElementById('tz-select');
+    let found = false;
+    for (let i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].value === data.timezone) { sel.selectedIndex = i; found = true; break; }
+    }
+    if (!found) {
+      sel.value = 'custom';
+      document.getElementById('tz-custom').style.display = 'block';
+      document.getElementById('tz-custom-input').value = data.timezone;
+    }
+  }
+}
+
+async function saveTimezone() {
+  const sel = document.getElementById('tz-select');
+  const tz = sel.value === 'custom' ? document.getElementById('tz-custom-input').value.trim() : sel.value;
+  if (!tz) { showAlert('請選擇或輸入時區', 'err'); return; }
+  const data = await api('/admin/timezone', 'POST', { timezone: tz });
+  if (data.ok) {
+    showAlert(`✅ 時區已更新為 ${data.timezone}，目前時間：${data.current_time}`);
+    document.getElementById('tz-current').innerHTML = 
+      `<strong>目前時區：</strong>${data.timezone}<br><strong>目前時間：</strong>${data.current_time}`;
+    document.getElementById('tz-current').style.background = '#e8f5e9';
+    setTimeout(() => document.getElementById('tz-current').style.background = '#f8fffe', 2000);
+  } else showAlert(data.error || '設定失敗', 'err');
+}
+
+loadTimezone();
 init();
 </script>
 </body>
