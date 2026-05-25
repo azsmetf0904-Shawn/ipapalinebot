@@ -1,0 +1,722 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LINE 公告機器人 管理後台</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',system-ui,sans-serif;background:#F5F5F0;color:#1A1A1A;min-height:100vh}
+.app{display:flex;min-height:100vh}
+.sidebar{width:220px;background:#fff;border-right:1px solid #E8E8E4;display:flex;flex-direction:column;position:fixed;top:0;left:0;height:100vh;z-index:50}
+.sidebar-logo{padding:20px 16px 16px;border-bottom:1px solid #E8E8E4}
+.logo-wrap{display:flex;align-items:center;gap:10px;font-size:14px;font-weight:600;color:#1A1A1A}
+.logo-icon{width:32px;height:32px;background:#06C755;border-radius:10px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;flex-shrink:0}
+.nav{flex:1;padding:10px 8px;overflow-y:auto}
+.nav-item{display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:8px;cursor:pointer;font-size:13px;color:#666;transition:all .15s;border:none;background:none;width:100%;text-align:left}
+.nav-item:hover{background:#F5F5F0;color:#1A1A1A}
+.nav-item.active{background:#E9FBF0;color:#06A847;font-weight:500}
+.nav-sep{height:1px;background:#E8E8E4;margin:8px 4px}
+.sidebar-footer{padding:12px 8px;border-top:1px solid #E8E8E4}
+.status-chip{display:flex;align-items:center;justify-content:space-between;padding:8px 11px;background:#F5F5F0;border-radius:8px;font-size:12px}
+.status-chip span{color:#999}
+.status-chip strong{color:#06A847}
+.main{margin-left:220px;flex:1;display:flex;flex-direction:column}
+.topbar{height:54px;background:#fff;border-bottom:1px solid #E8E8E4;display:flex;align-items:center;justify-content:space-between;padding:0 24px;position:sticky;top:0;z-index:40}
+.topbar-left{display:flex;align-items:center;gap:12px}
+.topbar-title{font-size:15px;font-weight:600;color:#1A1A1A}
+.tw-time{font-size:12px;color:#999;background:#F5F5F0;padding:4px 10px;border-radius:20px}
+.topbar-right{display:flex;gap:8px}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border-radius:8px;font-size:13px;cursor:pointer;border:1px solid #E0E0DC;background:#fff;color:#1A1A1A;transition:all .15s;font-family:inherit;white-space:nowrap}
+.btn:hover{background:#F5F5F0}
+.btn:active{transform:scale(.98)}
+.btn-primary{background:#06C755;border-color:#06C755;color:#fff}
+.btn-primary:hover{background:#05b34a;border-color:#05b34a}
+.btn-danger{background:#FFF0F0;border-color:#FFCDD2;color:#C62828}
+.btn-danger:hover{background:#FFEBEE}
+.btn-sm{padding:5px 10px;font-size:12px}
+.content{padding:24px;max-width:1000px}
+.panel{display:none}
+.panel.active{display:block}
+
+/* Stats */
+.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
+.stat{background:#fff;border:1px solid #E8E8E4;border-radius:12px;padding:16px 18px}
+.stat-label{font-size:11px;color:#999;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+.stat-value{font-size:26px;font-weight:600;color:#1A1A1A;line-height:1}
+.stat-sub{font-size:11px;color:#999;margin-top:4px}
+.stat-green{color:#06A847}
+
+/* Cards */
+.card{background:#fff;border:1px solid #E8E8E4;border-radius:12px;padding:18px 20px;margin-bottom:16px}
+.card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+.card-title{font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px;color:#1A1A1A}
+.card-title i{font-size:17px;color:#999}
+
+/* Table */
+.tbl{width:100%;border-collapse:collapse;font-size:13px}
+.tbl th{text-align:left;padding:8px 12px;color:#999;font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid #E8E8E4}
+.tbl td{padding:10px 12px;border-bottom:1px solid #F0F0EC;color:#1A1A1A;vertical-align:middle}
+.tbl tr:last-child td{border-bottom:none}
+.tbl tr:hover td{background:#FAFAF8}
+
+/* Badges */
+.badge{display:inline-flex;align-items:center;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:500}
+.bg-green{background:#E9FBF0;color:#06A847}
+.bg-blue{background:#E8F0FD;color:#1A5CC4}
+.bg-orange{background:#FFF3E0;color:#E65100}
+.bg-gray{background:#F5F5F0;color:#666}
+.bg-red{background:#FFF0F0;color:#C62828}
+
+/* Form */
+.fg{display:flex;flex-direction:column;gap:5px;margin-bottom:12px}
+.fg label{font-size:12px;color:#666;font-weight:500}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+.span2{grid-column:span 2}
+input,select,textarea{width:100%;padding:8px 11px;border:1px solid #E0E0DC;border-radius:8px;font-size:13px;color:#1A1A1A;background:#fff;outline:none;transition:border-color .15s;font-family:inherit}
+input:focus,select:focus,textarea:focus{border-color:#06C755}
+input[readonly]{background:#F5F5F0;color:#999}
+textarea{resize:vertical;min-height:72px}
+
+/* AI Box */
+.ai-box{background:linear-gradient(135deg,#E9FBF0,#EEF5FF);border:1px solid #B2DFC4;border-radius:12px;padding:16px;margin-bottom:16px;display:flex;gap:12px}
+.ai-icon{width:34px;height:34px;background:#06C755;border-radius:9px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:17px;flex-shrink:0;margin-top:2px}
+.ai-content{flex:1}
+.ai-label{font-size:12px;color:#0A7A3E;font-weight:500;margin-bottom:8px}
+
+/* Schedule cards */
+.sch-card{display:flex;align-items:flex-start;gap:12px;padding:14px;background:#FAFAF8;border:1px solid #E8E8E4;border-radius:10px;margin-bottom:10px}
+.sch-card.off{opacity:.55}
+.sch-dot{width:8px;height:8px;border-radius:50%;background:#06C755;margin-top:4px;flex-shrink:0}
+.sch-dot.off{background:#CCC}
+.sch-info{flex:1;min-width:0}
+.sch-title{font-size:13px;font-weight:500;margin-bottom:2px}
+.sch-meta{font-size:11px;color:#999}
+.sch-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}
+
+/* Toggle */
+.toggle{width:38px;height:22px;background:#CCC;border-radius:11px;position:relative;cursor:pointer;border:none;transition:background .2s;flex-shrink:0}
+.toggle.on{background:#06C755}
+.toggle::after{content:'';width:16px;height:16px;background:#fff;border-radius:50%;position:absolute;top:3px;left:3px;transition:transform .2s}
+.toggle.on::after{transform:translateX(16px)}
+
+/* Progress */
+.prog{height:4px;background:#E8E8E4;border-radius:2px;overflow:hidden;width:80px}
+.prog-fill{height:100%;background:#06C755;border-radius:2px}
+
+/* Announce */
+.preview-box{background:#F5F5F0;border-radius:8px;padding:12px;font-size:13px;min-height:64px;white-space:pre-wrap;color:#666;border:1px solid #E8E8E4}
+.char-cnt{font-size:11px;color:#999;text-align:right;margin-top:4px}
+
+/* Section divider */
+.sep{height:1px;background:#E8E8E4;margin:16px 0}
+
+/* Remind grid */
+.remind-grid{display:grid;grid-template-columns:80px 1fr 80px 1fr;gap:8px;align-items:end}
+
+/* Toast */
+#toast{position:fixed;bottom:24px;right:24px;padding:12px 18px;border-radius:10px;font-size:13px;color:#fff;background:#1A1A1A;opacity:0;transform:translateY(8px);transition:all .25s;z-index:1000;pointer-events:none;max-width:300px}
+#toast.show{opacity:1;transform:translateY(0)}
+#toast.ok{background:#06A847}
+#toast.err{background:#C62828}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-wrap">
+        <div class="logo-icon"><i class="ti ti-brand-line"></i></div>
+        LINE 公告機器人
+      </div>
+    </div>
+    <nav class="nav">
+      <button class="nav-item active" onclick="go('dashboard',this)"><i class="ti ti-layout-dashboard"></i> 總覽</button>
+      <button class="nav-item" onclick="go('courses',this)"><i class="ti ti-calendar-event"></i> 課程管理</button>
+      <button class="nav-item" onclick="go('broadcast',this)"><i class="ti ti-speakerphone"></i> 立即公告</button>
+      <button class="nav-item" onclick="go('scheduled',this)"><i class="ti ti-clock-play"></i> 排程廣播</button>
+      <div class="nav-sep"></div>
+      <button class="nav-item" onclick="go('categories',this)"><i class="ti ti-tag"></i> 分類管理</button>
+      <button class="nav-item" onclick="go('settings',this)"><i class="ti ti-settings"></i> 設定</button>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="status-chip">
+        <span><i class="ti ti-users" style="font-size:13px;vertical-align:-2px"></i> 群組</span>
+        <strong id="sidebar-groups">— 個</strong>
+      </div>
+      <button class="btn btn-sm" onclick="logout()" style="width:100%;margin-top:8px;justify-content:center;color:#999"><i class="ti ti-logout"></i> 登出</button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="topbar">
+      <div class="topbar-left">
+        <span class="topbar-title" id="page-title">總覽</span>
+        <span class="tw-time" id="tw-clock"></span>
+      </div>
+      <div class="topbar-right">
+        <button class="btn btn-sm" onclick="triggerReminders()"><i class="ti ti-bell-ringing"></i> 觸發提醒</button>
+        <button class="btn btn-sm btn-primary" onclick="go('broadcast',null)"><i class="ti ti-speakerphone"></i> 發公告</button>
+      </div>
+    </div>
+
+    <div class="content">
+
+      <!-- DASHBOARD -->
+      <div id="panel-dashboard" class="panel active">
+        <div class="stats-row">
+          <div class="stat"><div class="stat-label">課程總數</div><div class="stat-value" id="st-courses">—</div><div class="stat-sub">個課程</div></div>
+          <div class="stat"><div class="stat-label">排程廣播</div><div class="stat-value" id="st-sched">—</div><div class="stat-sub stat-green" id="st-sched-sub">個啟用</div></div>
+          <div class="stat"><div class="stat-label">待發提醒</div><div class="stat-value" id="st-remind">—</div><div class="stat-sub">筆待發</div></div>
+          <div class="stat"><div class="stat-label">連接群組</div><div class="stat-value" id="st-groups">—</div><div class="stat-sub">個群組</div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title"><i class="ti ti-calendar-event"></i> 近期課程</span><button class="btn btn-sm" onclick="go('courses',null)">查看全部</button></div>
+          <table class="tbl"><thead><tr><th>課程名稱</th><th>日期</th><th>分類</th><th>提醒</th><th></th></tr></thead>
+          <tbody id="dash-courses"><tr><td colspan="5" style="text-align:center;color:#999;padding:20px">載入中...</td></tr></tbody></table>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title"><i class="ti ti-clock-play"></i> 排程廣播</span></div>
+          <div id="dash-sched"><div style="text-align:center;color:#999;padding:20px">載入中...</div></div>
+        </div>
+      </div>
+
+      <!-- COURSES -->
+      <div id="panel-courses" class="panel">
+        <div class="ai-box">
+          <div class="ai-icon"><i class="ti ti-sparkles"></i></div>
+          <div class="ai-content">
+            <div class="ai-label">AI 智慧解析 — 描述課程讓 AI 自動填表</div>
+            <div style="display:flex;gap:8px">
+              <textarea id="ai-text" placeholder="例：下週五下午三點在台北辦公室舉辦新人培訓" style="flex:1;min-height:48px"></textarea>
+              <button class="btn btn-primary btn-sm" onclick="aiParse()" style="align-self:flex-end;flex-shrink:0"><i class="ti ti-sparkles"></i> 解析</button>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title"><i class="ti ti-plus"></i> 新增 / 編輯課程</span><button class="btn btn-sm" onclick="clearCourseForm()" id="cancel-edit-btn" style="display:none">取消編輯</button></div>
+          <input type="hidden" id="edit-course-id">
+          <div class="grid2">
+            <div class="fg span2"><label>課程名稱 *</label><input id="c-title" placeholder="課程名稱"></div>
+            <div class="fg"><label>上課日期 *</label><input id="c-date" type="date"></div>
+            <div class="fg"><label>上課時間</label><input id="c-time" type="time" value="09:00"></div>
+            <div class="fg"><label>分類</label><select id="c-cat"><option value="">— 選擇分類 —</option></select></div>
+            <div class="fg"><label>地點</label><input id="c-loc" placeholder="地點（選填）"></div>
+            <div class="fg span2"><label>說明</label><textarea id="c-desc" placeholder="課程說明（選填）"></textarea></div>
+            <div class="fg span2"><label>圖片網址</label><input id="c-img" placeholder="https://...（選填）"></div>
+          </div>
+          <div class="sep"></div>
+          <div style="font-size:12px;color:#666;font-weight:500;margin-bottom:10px">🔔 提醒設定</div>
+          <div class="remind-grid">
+            <div class="fg"><label>提前</label><input id="c-rv" type="number" value="30" min="1"></div>
+            <div class="fg"><label>單位</label><select id="c-ru"><option value="days">天</option><option value="weeks">週</option><option value="months">月</option></select></div>
+            <div class="fg"><label>每隔</label><input id="c-iv" type="number" value="7" min="1"></div>
+            <div class="fg"><label>單位</label><select id="c-iu"><option value="days">天</option><option value="weeks">週</option></select></div>
+          </div>
+          <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+            <button class="btn" onclick="clearCourseForm()">清除</button>
+            <button class="btn btn-primary" onclick="saveCourse()"><i class="ti ti-device-floppy"></i> 儲存課程</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title"><i class="ti ti-list"></i> 課程清單</span></div>
+          <table class="tbl"><thead><tr><th>課程</th><th>日期 / 時間</th><th>地點</th><th>分類</th><th>提醒進度</th><th>操作</th></tr></thead>
+          <tbody id="course-tbody"><tr><td colspan="6" style="text-align:center;color:#999;padding:20px">載入中...</td></tr></tbody></table>
+        </div>
+      </div>
+
+      <!-- BROADCAST -->
+      <div id="panel-broadcast" class="panel">
+        <div class="card">
+          <div class="card-head"><span class="card-title"><i class="ti ti-speakerphone"></i> 立即發送公告</span><span style="font-size:12px;color:#999" id="broadcast-group-hint"></span></div>
+          <div class="fg"><label>公告內容 *</label><textarea id="ann-text" placeholder="輸入公告內容..." style="min-height:120px" oninput="previewAnn()"></textarea><div class="char-cnt" id="ann-cnt">0 字</div></div>
+          <div class="fg"><label>附圖網址（選填）</label><input id="ann-img" type="url" placeholder="https://..." oninput="previewAnn()"></div>
+          <div class="sep"></div>
+          <div style="font-size:12px;color:#666;font-weight:500;margin-bottom:8px">預覽</div>
+          <div class="preview-box" id="ann-preview">（輸入內容後顯示預覽）</div>
+          <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+            <button class="btn" onclick="document.getElementById('ann-text').value='';previewAnn()">清除</button>
+            <button class="btn btn-primary" onclick="sendAnn()"><i class="ti ti-send"></i> 立即發送</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- SCHEDULED -->
+      <div id="panel-scheduled" class="panel">
+        <div class="card">
+          <div class="card-head"><span class="card-title"><i class="ti ti-plus"></i> 新增排程廣播</span></div>
+          <div class="grid2">
+            <div class="fg"><label>標題（內部識別）</label><input id="s-title" placeholder="例：每週業績提醒"></div>
+            <div class="fg"><label>開始時間</label><input id="s-start" type="datetime-local"></div>
+            <div class="fg span2"><label>廣播內容 *</label><textarea id="s-content" placeholder="廣播內容..." style="min-height:90px"></textarea></div>
+            <div class="fg"><label>附圖網址（選填）</label><input id="s-img" type="url" placeholder="https://..."></div>
+            <div class="fg"><label>發送間隔</label>
+              <div style="display:flex;gap:8px">
+                <input id="s-iv" type="number" value="7" min="1" style="width:80px">
+                <select id="s-iu" style="flex:1"><option value="days">天</option><option value="hours">小時</option><option value="weeks">週</option><option value="months">月</option></select>
+              </div>
+            </div>
+          </div>
+          <div style="display:flex;justify-content:flex-end;margin-top:14px">
+            <button class="btn btn-primary" onclick="addScheduled()"><i class="ti ti-device-floppy"></i> 儲存排程</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title"><i class="ti ti-list"></i> 排程清單</span></div>
+          <div id="sched-list"><div style="text-align:center;color:#999;padding:20px">載入中...</div></div>
+        </div>
+      </div>
+
+      <!-- CATEGORIES -->
+      <div id="panel-categories" class="panel">
+        <div class="card">
+          <div class="card-head"><span class="card-title"><i class="ti ti-plus"></i> 新增分類</span></div>
+          <div style="display:flex;gap:10px;align-items:flex-end">
+            <div class="fg" style="flex:1"><label>分類名稱</label><input id="cat-name" placeholder="例：內部訓練"></div>
+            <div class="fg"><label>顏色</label><input id="cat-color" type="color" value="#06C755" style="width:60px;height:36px;padding:2px;cursor:pointer"></div>
+            <button class="btn btn-primary" onclick="addCat()" style="flex-shrink:0;align-self:flex-end"><i class="ti ti-plus"></i> 新增</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title"><i class="ti ti-tag"></i> 分類清單</span></div>
+          <table class="tbl"><thead><tr><th>顏色</th><th>名稱</th><th></th></tr></thead>
+          <tbody id="cat-tbody"><tr><td colspan="3" style="text-align:center;color:#999;padding:20px">載入中...</td></tr></tbody></table>
+        </div>
+      </div>
+
+      <!-- SETTINGS -->
+      <div id="panel-settings" class="panel">
+        <div class="card">
+          <div class="card-head"><span class="card-title"><i class="ti ti-clock"></i> 時區資訊</span></div>
+          <div class="grid2">
+            <div class="fg"><label>時區</label><input value="Asia/Taipei (UTC+8)" readonly></div>
+            <div class="fg"><label>目前台灣時間</label><input id="tz-cur" readonly></div>
+          </div>
+          <p style="font-size:12px;color:#999;margin-top:8px">時區固定為台灣時間（Asia/Taipei），提醒每天 08:00 觸發。</p>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title"><i class="ti ti-users"></i> 已連接群組</span></div>
+          <table class="tbl"><thead><tr><th>Group ID</th><th>加入時間</th><th>來源</th></tr></thead>
+          <tbody id="groups-tbody"><tr><td colspan="3" style="text-align:center;color:#999;padding:20px">載入中...</td></tr></tbody></table>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title"><i class="ti ti-server"></i> 部署資訊</span></div>
+          <table class="tbl">
+            <thead><tr><th>平台</th><th>說明</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Railway</strong></td><td>永不休眠 · PostgreSQL · 自動 HTTPS · Git 推送自動部署</td></tr>
+              <tr><td><strong>排程</strong></td><td>APScheduler · 每日 08:00 台灣時間發提醒 · 每 15 分鐘檢查廣播</td></tr>
+              <tr><td><strong>圖片</strong></td><td>imgbb API · 設定 IMGBB_API_KEY 環境變數後啟用</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div><!-- /content -->
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<div id="toast"></div>
+
+<script>
+// ── 認證：先驗證再存，避免無限重新整理 ──
+async function promptPass(){
+  while(true){
+    const p = prompt('請輸入管理密碼：','');
+    if(p === null){ return null; } // 按取消
+    const test = await fetch('/admin/info',{headers:{'X-Admin-Pass':p,'Content-Type':'application/json'}});
+    if(test.ok){
+      localStorage.setItem('admin_pass', p);
+      return p;
+    }
+    alert('密碼錯誤，請重試');
+    localStorage.removeItem('admin_pass');
+  }
+}
+
+async function getPass(){
+  const cached = localStorage.getItem('admin_pass');
+  if(cached){
+    // 快速驗證快取密碼是否仍有效
+    const test = await fetch('/admin/info',{headers:{'X-Admin-Pass':cached,'Content-Type':'application/json'}});
+    if(test.ok) return cached;
+    localStorage.removeItem('admin_pass');
+  }
+  return await promptPass();
+}
+
+let _pass = null;
+
+async function api(path, opts={}){
+  if(!_pass) _pass = await getPass();
+  if(!_pass) return {};
+  const h = {'X-Admin-Pass': _pass, 'Content-Type': 'application/json'};
+  const r = await fetch(path, {headers: h, ...opts});
+  if(r.status === 401){
+    // 密碼失效，清除後重新提示（不 reload）
+    localStorage.removeItem('admin_pass');
+    _pass = null;
+    _pass = await getPass();
+    if(!_pass) return {};
+    const h2 = {'X-Admin-Pass': _pass, 'Content-Type': 'application/json'};
+    return (await fetch(path, {headers: h2, ...opts})).json();
+  }
+  return r.json();
+}
+
+// 登出按鈕用
+function logout(){
+  localStorage.removeItem('admin_pass');
+  _pass = null;
+  location.reload();
+}
+
+// ── Navigation ──
+const titles = {dashboard:'總覽',courses:'課程管理',broadcast:'立即公告',scheduled:'排程廣播',categories:'分類管理',settings:'設定'};
+function go(id, btn){
+  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  document.getElementById('panel-'+id).classList.add('active');
+  document.getElementById('page-title').textContent = titles[id]||id;
+  if(btn) btn.classList.add('active');
+  else { const btns=[...document.querySelectorAll('.nav-item')]; const b=btns.find(b=>b.onclick&&b.onclick.toString().includes("'"+id+"'")); if(b)b.classList.add('active'); }
+  if(id==='courses') loadCourses(), loadCategories();
+  if(id==='dashboard') loadDashboard();
+  if(id==='scheduled') loadScheduled();
+  if(id==='categories') loadCategories();
+  if(id==='settings') loadSettings();
+}
+
+// ── Toast ──
+function toast(msg, type=''){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.className='show '+(type==='ok'?'ok':type==='err'?'err':'');
+  clearTimeout(t._t); t._t=setTimeout(()=>t.className='',3000);
+}
+
+// ── Clock ──
+function updateClock(){
+  const tw=new Date().toLocaleString('zh-TW',{timeZone:'Asia/Taipei',hour12:false,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  document.getElementById('tw-clock').textContent='台灣 '+tw;
+  const ti=document.getElementById('tz-cur'); if(ti) ti.value=tw;
+}
+setInterval(updateClock,1000); updateClock();
+
+// ── Dashboard ──
+let _courses=[], _scheds=[], _catMap={};
+
+async function loadDashboard(){
+  const [ci, si, gi] = await Promise.all([
+    api('/admin/courses'), api('/admin/scheduled'), api('/admin/groups')
+  ]);
+  _courses = ci.courses||[];
+  _scheds  = si.schedules||[];
+  const groups = gi.groups||[];
+
+  document.getElementById('st-courses').textContent = _courses.length;
+  document.getElementById('st-groups').textContent  = groups.length;
+  document.getElementById('sidebar-groups').textContent = groups.length+' 個';
+  document.getElementById('broadcast-group-hint').textContent = '將推播至 '+groups.length+' 個群組';
+
+  const activeS = _scheds.filter(s=>s.active).length;
+  document.getElementById('st-sched').textContent = _scheds.length;
+  document.getElementById('st-sched-sub').textContent = activeS+' 個啟用';
+
+  const pending = _courses.reduce((a,c)=>{
+    const rem = (c.remind_count||0)-(c.sent_count||0);
+    return a + (rem>0?rem:0);
+  },0);
+  document.getElementById('st-remind').textContent = pending;
+
+  // Recent courses (top 5 upcoming)
+  const upcoming = _courses.filter(c=>c.course_date >= today()).slice(0,5);
+  const tbody = document.getElementById('dash-courses');
+  tbody.innerHTML = upcoming.length ? upcoming.map(c=>`
+    <tr>
+      <td>${esc(c.title)}</td>
+      <td>${c.course_date}</td>
+      <td>${c.category_name?`<span class="badge bg-gray">${esc(c.category_name)}</span>`:'—'}</td>
+      <td><div class="prog"><div class="prog-fill" style="width:${pct(c.sent_count,c.remind_count)}%"></div></div></td>
+      <td><button class="btn btn-sm" onclick="sendCourseNow(${c.id})"><i class="ti ti-send"></i></button></td>
+    </tr>`).join('') : '<tr><td colspan="5" style="text-align:center;color:#999;padding:16px">暫無即將到來的課程</td></tr>';
+
+  // Schedules
+  const sdiv = document.getElementById('dash-sched');
+  sdiv.innerHTML = _scheds.length ? _scheds.slice(0,5).map(s=>`
+    <div class="sch-card ${s.active?'':'off'}">
+      <div class="sch-dot ${s.active?'':'off'}"></div>
+      <div class="sch-info"><div class="sch-title">${esc(s.title)}</div><div class="sch-meta">每 ${fmtInterval(s.interval_seconds)} · 下次: ${s.next_run?.slice(0,16)?.replace('T',' ')}</div></div>
+      <span class="badge ${s.active?'bg-green':'bg-gray'}">${s.active?'啟用':'停用'}</span>
+    </div>`).join('') : '<div style="text-align:center;color:#999;padding:16px">暫無排程廣播</div>';
+}
+
+// ── Courses ──
+async function loadCourses(){
+  const [ci, cats] = await Promise.all([api('/admin/courses'), api('/admin/categories')]);
+  _courses = ci.courses||[];
+  const categories = cats.categories||[];
+  _catMap = {}; categories.forEach(c=>{ _catMap[c.id]=c; });
+
+  const sel = document.getElementById('c-cat');
+  sel.innerHTML = '<option value="">— 選擇分類 —</option>' + categories.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+
+  const tbody = document.getElementById('course-tbody');
+  tbody.innerHTML = _courses.length ? _courses.map(c=>`
+    <tr>
+      <td><strong>${esc(c.title)}</strong></td>
+      <td style="white-space:nowrap">${c.course_date} ${c.course_time}</td>
+      <td>${esc(c.location)||'—'}</td>
+      <td>${c.category_name?`<span class="badge bg-gray">${esc(c.category_name)}</span>`:'—'}</td>
+      <td><div class="prog"><div class="prog-fill" style="width:${pct(c.sent_count,c.remind_count)}%"></div></div><span style="font-size:11px;color:#999">${c.sent_count||0}/${c.remind_count||0}</span></td>
+      <td><div style="display:flex;gap:5px">
+        <button class="btn btn-sm" onclick="sendCourseNow(${c.id})" title="立即發送"><i class="ti ti-send"></i></button>
+        <button class="btn btn-sm" onclick="editCourse(${c.id})" title="編輯"><i class="ti ti-edit"></i></button>
+        <button class="btn btn-sm btn-danger" onclick="deleteCourse(${c.id})" title="刪除"><i class="ti ti-trash"></i></button>
+      </div></td>
+    </tr>`).join('') : '<tr><td colspan="6" style="text-align:center;color:#999;padding:24px">尚無課程，請使用上方表單新增</td></tr>';
+}
+
+function editCourse(id){
+  const c = _courses.find(x=>x.id===id); if(!c) return;
+  document.getElementById('edit-course-id').value = id;
+  document.getElementById('c-title').value = c.title;
+  document.getElementById('c-date').value  = c.course_date;
+  document.getElementById('c-time').value  = c.course_time||'09:00';
+  document.getElementById('c-cat').value   = c.category_id||'';
+  document.getElementById('c-loc').value   = c.location||'';
+  document.getElementById('c-desc').value  = c.description||'';
+  document.getElementById('c-img').value   = c.image_url||'';
+  document.getElementById('c-rv').value    = c.remind_value||30;
+  document.getElementById('c-ru').value    = c.remind_unit||'days';
+  document.getElementById('c-iv').value    = c.remind_interval_value||7;
+  document.getElementById('c-iu').value    = c.remind_interval_unit||'days';
+  document.getElementById('cancel-edit-btn').style.display='';
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+
+function clearCourseForm(){
+  document.getElementById('edit-course-id').value='';
+  ['c-title','c-loc','c-desc','c-img'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('c-date').value='';
+  document.getElementById('c-time').value='09:00';
+  document.getElementById('c-cat').value='';
+  document.getElementById('c-rv').value=30;
+  document.getElementById('c-ru').value='days';
+  document.getElementById('c-iv').value=7;
+  document.getElementById('c-iu').value='days';
+  document.getElementById('cancel-edit-btn').style.display='none';
+}
+
+async function saveCourse(){
+  const title = document.getElementById('c-title').value.trim();
+  const date  = document.getElementById('c-date').value;
+  if(!title||!date){ toast('請填寫課程名稱和日期','err'); return; }
+  const cid = document.getElementById('edit-course-id').value;
+  const body = {
+    title, course_date:date,
+    course_time: document.getElementById('c-time').value,
+    category_id: document.getElementById('c-cat').value||null,
+    location:    document.getElementById('c-loc').value,
+    description: document.getElementById('c-desc').value,
+    image_url:   document.getElementById('c-img').value,
+    remind_value: parseInt(document.getElementById('c-rv').value)||30,
+    remind_unit:  document.getElementById('c-ru').value,
+    remind_interval_value: parseInt(document.getElementById('c-iv').value)||7,
+    remind_interval_unit:  document.getElementById('c-iu').value,
+  };
+  const url    = cid ? `/admin/courses/${cid}` : '/admin/courses';
+  const method = cid ? 'PUT' : 'POST';
+  const r = await api(url, {method, body:JSON.stringify(body)});
+  if(r.ok){ toast(`課程已${cid?'更新':'新增'}！共 ${r.remind_count} 個提醒`,'ok'); clearCourseForm(); loadCourses(); }
+  else toast(r.error||'儲存失敗','err');
+}
+
+async function deleteCourse(id){
+  if(!confirm('確定刪除此課程（含所有提醒）？')) return;
+  const r = await api(`/admin/courses/${id}`,{method:'DELETE'});
+  if(r.ok){ toast('課程已刪除','ok'); loadCourses(); }
+}
+
+async function sendCourseNow(id){
+  const r = await api(`/admin/courses/${id}/send-now`,{method:'POST'});
+  if(r.ok) toast(`已推播至 ${r.ok}/${r.total} 個群組 ✓`,'ok');
+  else toast(r.error||'發送失敗','err');
+}
+
+// ── AI Parse ──
+async function aiParse(){
+  const text = document.getElementById('ai-text').value.trim();
+  if(!text){ toast('請輸入課程描述','err'); return; }
+  toast('AI 解析中...');
+  const r = await api('/admin/ai-parse',{method:'POST',body:JSON.stringify({text})});
+  if(r.ok && r.course){
+    const c=r.course;
+    document.getElementById('c-title').value = c.title||'';
+    document.getElementById('c-date').value  = c.course_date||'';
+    document.getElementById('c-time').value  = c.course_time||'09:00';
+    document.getElementById('c-loc').value   = c.location||'';
+    document.getElementById('c-desc').value  = c.description||'';
+    if(c.remind_value) document.getElementById('c-rv').value = c.remind_value;
+    if(c.remind_unit)  document.getElementById('c-ru').value = c.remind_unit;
+    if(c.remind_interval_value) document.getElementById('c-iv').value = c.remind_interval_value;
+    if(c.remind_interval_unit)  document.getElementById('c-iu').value = c.remind_interval_unit;
+    toast('AI 解析完成！請確認後儲存','ok');
+    document.getElementById('ai-text').value='';
+  } else toast(r.error||'解析失敗','err');
+}
+
+// ── Announce ──
+function previewAnn(){
+  const text = document.getElementById('ann-text').value;
+  const img  = document.getElementById('ann-img').value;
+  document.getElementById('ann-cnt').textContent = text.length+' 字';
+  const prev = document.getElementById('ann-preview');
+  prev.textContent = (!text&&!img)?'（輸入內容後顯示預覽）':(img?'[附圖: '+img+']\n':'')+text;
+}
+
+async function sendAnn(){
+  const text = document.getElementById('ann-text').value.trim();
+  const img  = document.getElementById('ann-img').value.trim();
+  if(!text&&!img){ toast('請輸入公告內容','err'); return; }
+  const r = await api('/admin/send',{method:'POST',body:JSON.stringify({text,image_url:img})});
+  if(r.ok||r.ok===0){ toast(`公告已發送至 ${r.ok}/${r.total} 個群組 ✓`,'ok'); document.getElementById('ann-text').value=''; document.getElementById('ann-img').value=''; previewAnn(); }
+  else toast('發送失敗','err');
+}
+
+// ── Scheduled ──
+async function loadScheduled(){
+  const r = await api('/admin/scheduled');
+  _scheds = r.schedules||[];
+  renderScheds();
+}
+
+function renderScheds(){
+  const div = document.getElementById('sched-list');
+  div.innerHTML = _scheds.length ? _scheds.map(s=>`
+    <div class="sch-card ${s.active?'':'off'}" id="sch-${s.id}">
+      <div class="sch-dot ${s.active?'':'off'}" id="sch-dot-${s.id}"></div>
+      <div class="sch-info">
+        <div class="sch-title">${esc(s.title)}</div>
+        <div class="sch-meta">${esc(s.content?.slice(0,60))||''}${(s.content?.length||0)>60?'...':''} · 每 ${fmtInterval(s.interval_seconds)} · 下次: ${s.next_run?.slice(0,16)?.replace('T',' ')}</div>
+      </div>
+      <div class="sch-actions">
+        <button class="toggle ${s.active?'on':''}" onclick="toggleSched(${s.id},this)"></button>
+        <button class="btn btn-sm" onclick="sendSchedNow(${s.id})"><i class="ti ti-send"></i></button>
+        <button class="btn btn-sm btn-danger" onclick="deleteSched(${s.id})"><i class="ti ti-trash"></i></button>
+      </div>
+    </div>`).join('') : '<div style="text-align:center;color:#999;padding:24px">尚無排程廣播</div>';
+}
+
+async function addScheduled(){
+  const title   = document.getElementById('s-title').value.trim();
+  const content = document.getElementById('s-content').value.trim();
+  if(!title||!content){ toast('請填寫標題和內容','err'); return; }
+  const body = {
+    title, content,
+    image_url:      document.getElementById('s-img').value.trim(),
+    interval_value: parseFloat(document.getElementById('s-iv').value)||7,
+    interval_unit:  document.getElementById('s-iu').value,
+    start_time:     document.getElementById('s-start').value||new Date().toISOString(),
+  };
+  const r = await api('/admin/scheduled',{method:'POST',body:JSON.stringify(body)});
+  if(r.ok){ toast('排程已新增！','ok'); ['s-title','s-content','s-img','s-start'].forEach(id=>document.getElementById(id).value=''); loadScheduled(); }
+  else toast(r.error||'新增失敗','err');
+}
+
+async function toggleSched(id, btn){
+  const on = btn.classList.toggle('on');
+  const card = document.getElementById('sch-'+id);
+  const dot  = document.getElementById('sch-dot-'+id);
+  if(card){ if(on) card.classList.remove('off'); else card.classList.add('off'); }
+  if(dot)  { if(on) dot.classList.remove('off');  else dot.classList.add('off'); }
+  await api(`/admin/scheduled/${id}`,{method:'PUT',body:JSON.stringify({active:on?1:0})});
+  toast(on?'已啟用':'已停用','ok');
+}
+
+async function sendSchedNow(id){
+  const r = await api(`/admin/scheduled/${id}/send-now`,{method:'POST'});
+  if(r.ok||r.ok===0) toast(`已推播至 ${r.ok}/${r.total} 個群組 ✓`,'ok');
+  else toast(r.error||'發送失敗','err');
+}
+
+async function deleteSched(id){
+  if(!confirm('確定刪除此排程？')) return;
+  const r = await api(`/admin/scheduled/${id}`,{method:'DELETE'});
+  if(r.ok){ toast('已刪除','ok'); loadScheduled(); }
+}
+
+// ── Categories ──
+async function loadCategories(){
+  const r = await api('/admin/categories');
+  const cats = r.categories||[];
+  const sel = document.getElementById('c-cat');
+  if(sel){
+    const cur=sel.value;
+    sel.innerHTML='<option value="">— 選擇分類 —</option>'+cats.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+    sel.value=cur;
+  }
+  const tbody=document.getElementById('cat-tbody');
+  if(!tbody) return;
+  tbody.innerHTML = cats.length ? cats.map(c=>`
+    <tr>
+      <td><span style="display:inline-block;width:18px;height:18px;border-radius:5px;background:${esc(c.color)};vertical-align:-4px"></span></td>
+      <td>${esc(c.name)}</td>
+      <td><button class="btn btn-sm btn-danger" onclick="deleteCat(${c.id})"><i class="ti ti-trash"></i></button></td>
+    </tr>`).join('') : '<tr><td colspan="3" style="text-align:center;color:#999;padding:16px">暫無分類</td></tr>';
+}
+
+async function addCat(){
+  const name  = document.getElementById('cat-name').value.trim();
+  const color = document.getElementById('cat-color').value;
+  if(!name){ toast('請輸入分類名稱','err'); return; }
+  const r = await api('/admin/categories',{method:'POST',body:JSON.stringify({name,color})});
+  if(r.ok){ toast('分類已新增','ok'); document.getElementById('cat-name').value=''; loadCategories(); }
+  else toast(r.error||'新增失敗','err');
+}
+
+async function deleteCat(id){
+  if(!confirm('確定刪除此分類？已使用該分類的課程將改為「未分類」。')) return;
+  const r = await api(`/admin/categories/${id}`,{method:'DELETE'});
+  if(r.ok){ toast('已刪除','ok'); loadCategories(); }
+}
+
+// ── Settings ──
+async function loadSettings(){
+  const [gi, info] = await Promise.all([api('/admin/groups'), api('/admin/info')]);
+  const groups = gi.groups||[];
+  document.getElementById('sidebar-groups').textContent = groups.length+' 個';
+  const tbody = document.getElementById('groups-tbody');
+  tbody.innerHTML = groups.length ? groups.map(g=>`
+    <tr>
+      <td style="font-family:monospace;font-size:12px">${esc(g)}</td>
+      <td>—</td>
+      <td><span class="badge bg-blue">已連接</span></td>
+    </tr>`).join('') : '<tr><td colspan="3" style="text-align:center;color:#999;padding:16px">尚無群組，將機器人加入群組即可自動偵測</td></tr>';
+}
+
+async function triggerReminders(){
+  const r = await api('/admin/check-reminders',{method:'POST'});
+  if(r.ok) toast(`提醒已觸發（台灣日期：${r.tw_date}）`,'ok');
+  else toast('觸發失敗','err');
+}
+
+// ── Helpers ──
+function esc(s){ const d=document.createElement('div'); d.textContent=String(s||''); return d.innerHTML; }
+function today(){ return new Date().toLocaleDateString('sv',{timeZone:'Asia/Taipei'}); }
+function pct(a,b){ return b?Math.round(((a||0)/b)*100):0; }
+function fmtInterval(s){
+  if(!s) return '—';
+  if(s>=2592000) return Math.round(s/2592000)+'個月';
+  if(s>=604800)  return Math.round(s/604800)+'週';
+  if(s>=86400)   return Math.round(s/86400)+'天';
+  if(s>=3600)    return Math.round(s/3600)+'小時';
+  return Math.round(s/60)+'分鐘';
+}
+
+// ── Init ──
+loadDashboard();
+</script>
+</body>
+</html>
