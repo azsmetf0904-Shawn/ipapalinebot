@@ -2,27 +2,39 @@ name: 定時公告排程
 
 on:
   schedule:
+    # 每天台灣時間 08:00 觸發（UTC 00:00）
     - cron: "0 0 * * *"
+    # 每15分鐘檢查定時發送（UTC）
+    - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
       message:
         description: 手動公告內容
-        required: true
-        default: 手動觸發的公告
+        required: false
+        default: ""
 
 jobs:
-  announce:
+  check-reminders:
     runs-on: ubuntu-latest
     steps:
-      - name: 觸發每日課程提醒檢查
-        if: github.event_name == 'schedule'
+      - name: 觸發課程提醒檢查
+        if: github.event.schedule == '0 0 * * *' || github.event_name == 'workflow_dispatch'
         run: |
           curl -s -X POST https://ipapalinebot.onrender.com/admin/check-reminders \
             -H "X-Admin-Pass: ${{ secrets.ADMIN_PASSWORD }}" \
-            -H "Content-Type: application/json"
+            -H "Content-Type: application/json" \
+            -d '{}'
+
+      - name: 觸發定時發送檢查
+        if: github.event.schedule == '*/15 * * * *' || github.event_name == 'workflow_dispatch'
+        run: |
+          curl -s -X POST https://ipapalinebot.onrender.com/admin/check-reminders \
+            -H "X-Admin-Pass: ${{ secrets.ADMIN_PASSWORD }}" \
+            -H "Content-Type: application/json" \
+            -d '{}'
 
       - name: 手動發公告
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.message != ''
         run: |
           curl -s -X POST https://ipapalinebot.onrender.com/admin/send \
             -H "X-Admin-Pass: ${{ secrets.ADMIN_PASSWORD }}" \
