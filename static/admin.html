@@ -146,6 +146,7 @@ textarea{resize:vertical;min-height:72px}
         <span><i class="ti ti-users" style="font-size:13px;vertical-align:-2px"></i> 群組</span>
         <strong id="sidebar-groups">— 個</strong>
       </div>
+      <button class="btn btn-sm" onclick="logout()" style="width:100%;margin-top:8px;justify-content:center;color:#999"><i class="ti ti-logout"></i> 登出</button>
     </div>
   </aside>
 
@@ -320,20 +321,56 @@ textarea{resize:vertical;min-height:72px}
 <div id="toast"></div>
 
 <script>
-const PASS = localStorage.getItem('admin_pass') || promptPass();
-function promptPass(){
-  const p = prompt('請輸入管理密碼：','');
-  if(p) localStorage.setItem('admin_pass', p);
-  return p;
+// ── 認證：先驗證再存，避免無限重新整理 ──
+async function promptPass(){
+  while(true){
+    const p = prompt('請輸入管理密碼：','');
+    if(p === null){ return null; } // 按取消
+    const test = await fetch('/admin/info',{headers:{'X-Admin-Pass':p,'Content-Type':'application/json'}});
+    if(test.ok){
+      localStorage.setItem('admin_pass', p);
+      return p;
+    }
+    alert('密碼錯誤，請重試');
+    localStorage.removeItem('admin_pass');
+  }
 }
 
-const H = {'X-Admin-Pass': PASS, 'Content-Type': 'application/json'};
+async function getPass(){
+  const cached = localStorage.getItem('admin_pass');
+  if(cached){
+    // 快速驗證快取密碼是否仍有效
+    const test = await fetch('/admin/info',{headers:{'X-Admin-Pass':cached,'Content-Type':'application/json'}});
+    if(test.ok) return cached;
+    localStorage.removeItem('admin_pass');
+  }
+  return await promptPass();
+}
 
-function api(path, opts={}){
-  return fetch(path, {headers: H, ...opts}).then(r=>{
-    if(r.status===401){ localStorage.removeItem('admin_pass'); location.reload(); }
-    return r.json();
-  });
+let _pass = null;
+
+async function api(path, opts={}){
+  if(!_pass) _pass = await getPass();
+  if(!_pass) return {};
+  const h = {'X-Admin-Pass': _pass, 'Content-Type': 'application/json'};
+  const r = await fetch(path, {headers: h, ...opts});
+  if(r.status === 401){
+    // 密碼失效，清除後重新提示（不 reload）
+    localStorage.removeItem('admin_pass');
+    _pass = null;
+    _pass = await getPass();
+    if(!_pass) return {};
+    const h2 = {'X-Admin-Pass': _pass, 'Content-Type': 'application/json'};
+    return (await fetch(path, {headers: h2, ...opts})).json();
+  }
+  return r.json();
+}
+
+// 登出按鈕用
+function logout(){
+  localStorage.removeItem('admin_pass');
+  _pass = null;
+  location.reload();
 }
 
 // ── Navigation ──
