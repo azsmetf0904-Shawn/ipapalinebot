@@ -842,11 +842,26 @@ async function sendManual(){
 // ── AI Parse ──
 async function aiParse(){
   const text=document.getElementById('ai-input').value.trim();
+  const imgFile=document.getElementById('ai-img-file').files[0];
   const imgUrl=document.getElementById('ai-img-url').value.trim();
-  if(!text&&!imgUrl){showAlert('請輸入課程描述或上傳圖片','err');return;}
+  if(!text&&!imgFile&&!imgUrl){showAlert('請輸入課程描述或上傳圖片','err');return;}
   const btn=document.getElementById('ai-btn');
   btn.textContent='⏳ AI 解析中...'; btn.disabled=true;
-  const data=await api('/admin/ai-parse','POST',{text,image_url:imgUrl});
+
+  let data;
+  if(imgFile){
+    // Send as multipart form with base64
+    const b64 = await new Promise(res=>{
+      const r=new FileReader();
+      r.onload=()=>res(r.result.split(',')[1]);
+      r.readAsDataURL(imgFile);
+    });
+    data = await api('/admin/ai-parse','POST',{
+      text, image_b64:b64, image_media_type:imgFile.type||'image/jpeg'
+    });
+  } else {
+    data=await api('/admin/ai-parse','POST',{text,image_url:imgUrl});
+  }
   btn.textContent='🤖 AI 解析'; btn.disabled=false;
   if(!data.ok){showAlert(data.error||'AI 解析失敗','err');return;}
   const c=data.course;
