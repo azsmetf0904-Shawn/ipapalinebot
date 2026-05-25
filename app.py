@@ -1,4 +1,5 @@
 import os, json, hashlib, hmac, base64, sqlite3, logging, requests, tempfile
+from zoneinfo import ZoneInfo
 from datetime import datetime, date, timedelta
 from flask import Flask, request, abort, jsonify, send_from_directory
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -17,6 +18,16 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "ipapa2026")
 DATABASE = os.environ.get("DATABASE_PATH", "bot.db")
 DEFAULT_GROUP_IDS = [x.strip() for x in os.environ.get("DEFAULT_GROUP_IDS", "").split(",") if x.strip()]
 IMGBB_API_KEY = os.environ.get("IMGBB_API_KEY", "")
+TIMEZONE = os.environ.get("TIMEZONE", "Asia/Taipei")
+
+def now_local():
+    try:
+        return datetime.now(ZoneInfo(TIMEZONE))
+    except:
+        return datetime.now(ZoneInfo("Asia/Taipei"))
+
+def today_local():
+    return now_local().date()
 
 HEADERS = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
 
@@ -80,7 +91,7 @@ def init_db():
     """)
     for cat in [("招商活動","#FF6B35"),("系統會議","#1A73E8"),("課程培訓","#06C755"),("其他","#9E9E9E")]:
         conn.execute("INSERT OR IGNORE INTO categories (name,color,created_at) VALUES (?,?,?)",
-                     (cat[0], cat[1], datetime.now().isoformat()))
+                     (cat[0], cat[1], now_local().isoformat()))
     conn.commit()
     conn.close()
     logger.info("DB initialized")
@@ -160,7 +171,7 @@ def generate_reminders(course_id, course_date_str, remind_value, remind_unit, in
     return dates
 
 def check_and_send_reminders():
-    today = date.today().isoformat()
+    today = today_local().isoformat()
     conn = get_db()
     rows = conn.execute("""
         SELECT cr.id, c.title, c.course_date, c.course_time, c.location, c.description, c.image_url,
@@ -171,7 +182,7 @@ def check_and_send_reminders():
     """, (today,)).fetchall()
     for row in rows:
         cd = datetime.strptime(row["course_date"], "%Y-%m-%d").date()
-        days_left = (cd - date.today()).days
+        days_left = (cd - today_local()).days
         timing = "【今天上課】" if days_left==0 else f"【還有 {days_left} 天】"
         cat = f"[{row['category_name']}] " if row["category_name"] else ""
         text = f"📚 課程提醒 {timing}\n━━━━━━━━━━━━\n{cat}📌 {row['title']}\n📅 {row['course_date']} {row['course_time']}"
@@ -188,7 +199,7 @@ def check_and_send_reminders():
     conn.close()
 
 def check_scheduled_broadcasts():
-    now = datetime.now().isoformat()
+    now = now_local().isoformat()
     conn = get_db()
     rows = conn.execute("SELECT * FROM scheduled_broadcasts WHERE active=1 AND next_run<=?", (now,)).fetchall()
     for row in rows:
@@ -197,7 +208,7 @@ def check_scheduled_broadcasts():
             msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
         msgs.append({"type":"text","text":row["content"]})
         ok, total = push_to_groups(msgs)
-        next_run = (datetime.now() + seconds_to_timedelta(row["interval_seconds"])).isoformat()
+        next_run = (now_local() + seconds_to_timedelta(row["interval_seconds"])).isoformat()
         conn.execute("UPDATE scheduled_broadcasts SET next_run=? WHERE id=?", (next_run, row["id"]))
         logger.info(f"Scheduled '{row['title']}' sent to {ok}/{total}")
     conn.commit()
@@ -225,6 +236,25 @@ def init_db_route():
     return "DB initialized OK"
 
 # ── API ──
+
+@app.route("/admin/timezone", methods=["GET"])
+def get_timezone():
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    return jsonify({"timezone": TIMEZONE, "current_time": now_local().strftime("%Y-%m-%d %H:%M:%S %Z")})
+
+@app.route("/admin/timezone", methods=["POST"])
+def set_timezone():
+    if not check_admin(request): return jsonify({"error":"unauthorized"}),401
+    tz = request.json.get("timezone","").strip()
+    try:
+        ZoneInfo(tz)  # validate
+    except Exception:
+        return jsonify({"ok":False,"error":"無效的時區"})
+    # Write to env file for persistence hint (actual change needs Render env var)
+    global TIMEZONE
+    TIMEZONE = tz
+    return jsonify({"ok":True,"timezone":tz,"current_time":now_local().strftime("%Y-%m-%d %H:%M:%S %Z")})
+
 @app.route("/admin/groups")
 def get_groups():
     if not check_admin(request): return jsonify({"error":"unauthorized"}),401
@@ -247,7 +277,7 @@ def add_category():
     try:
         conn = get_db()
         conn.execute("INSERT INTO categories (name,color,created_at) VALUES (?,?,?)",
-                     (name, d.get("color","#06C755"), datetime.now().isoformat()))
+                     (name, d.get("color","#06C755"), now_local().isoformat()))
         conn.commit()
         conn.close()
         return jsonify({"ok":True})
@@ -295,7 +325,7 @@ def add_course():
         "INSERT INTO courses (category_id,title,course_date,course_time,location,description,image_url,remind_value,remind_unit,remind_interval_value,remind_interval_unit,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (d.get("category_id"), title, course_date, d.get("course_time","09:00"),
          d.get("location",""), d.get("description",""), d.get("image_url",""),
-         rv, ru, iv, iu, datetime.now().isoformat())
+         rv, ru, iv, iu, now_local().isoformat())
     )
     cid = cur.lastrowid
     conn.commit()
@@ -344,7 +374,7 @@ def send_course_now(cid):
     conn.close()
     if not row: return jsonify({"ok":False,"error":"找不到課程"})
     cd = datetime.strptime(row["course_date"], "%Y-%m-%d").date()
-    days_left = (cd - date.today()).days
+    days_left = (cd - today_local()).days
     timing = "【今天】" if days_left==0 else f"【還有{days_left}天】" if days_left>0 else "【已結束】"
     cat = f"[{row['category_name']}] " if row["category_name"] else ""
     text = f"📚 課程提醒 {timing}\n━━━━━━━━━━━━\n{cat}📌 {row['title']}\n📅 {row['course_date']} {row['course_time']}"
@@ -400,14 +430,14 @@ def add_scheduled():
     iv = float(d.get("interval_value", 1))
     iu = d.get("interval_unit","days")
     interval_seconds = unit_to_seconds(iv, iu)
-    start_time = d.get("start_time", datetime.now().isoformat())
+    start_time = d.get("start_time", now_local().isoformat())
     try:
         next_run = datetime.fromisoformat(start_time).isoformat()
     except:
-        next_run = datetime.now().isoformat()
+        next_run = now_local().isoformat()
     conn = get_db()
     conn.execute("INSERT INTO scheduled_broadcasts (title,content,image_url,interval_seconds,next_run,active,created_at) VALUES (?,?,?,?,?,1,?)",
-        (title, content_text, d.get("image_url",""), interval_seconds, next_run, datetime.now().isoformat()))
+        (title, content_text, d.get("image_url",""), interval_seconds, next_run, now_local().isoformat()))
     conn.commit()
     conn.close()
     return jsonify({"ok":True})
@@ -448,7 +478,7 @@ def send_scheduled_now(sid):
     if row["image_url"]: msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
     msgs.append({"type":"text","text":row["content"]})
     ok, total = push_to_groups(msgs)
-    next_run = (datetime.now() + seconds_to_timedelta(row["interval_seconds"])).isoformat()
+    next_run = (now_local() + seconds_to_timedelta(row["interval_seconds"])).isoformat()
     conn = get_db()
     conn.execute("UPDATE scheduled_broadcasts SET next_run=? WHERE id=?", (next_run, sid))
     conn.commit()
@@ -461,7 +491,7 @@ def ai_parse_course():
     text = request.json.get("text","").strip()
     image_url = request.json.get("image_url","").strip()
     if not text and not image_url: return jsonify({"ok":False,"error":"請輸入課程描述或圖片"})
-    today = date.today().isoformat()
+    today = today_local().isoformat()
     prompt = f"""今天是 {today}。請從以下內容提取課程資訊，只回傳 JSON，不要其他文字：
 {{"title":"課程名稱","course_date":"YYYY-MM-DD","course_time":"HH:MM","location":"地點或空字串","description":"說明或空字串","remind_value":30,"remind_unit":"days","remind_interval_value":7,"remind_interval_unit":"days"}}
 用戶輸入：{text}"""
@@ -490,7 +520,7 @@ def trigger_reminders():
     if request.headers.get("X-Admin-Pass") != ADMIN_PASSWORD: return jsonify({"error":"unauthorized"}),401
     check_and_send_reminders()
     check_scheduled_broadcasts()
-    return jsonify({"ok":True,"date":date.today().isoformat()})
+    return jsonify({"ok":True,"date":today_local().isoformat()})
 
 # ── Webhook ──
 def handle_text(event):
@@ -501,7 +531,7 @@ def handle_text(event):
         gid = event["source"]["groupId"]
         logger.info(f"GROUP MESSAGE: groupId={gid} userId={user_id}")
         conn = get_db()
-        conn.execute("INSERT OR IGNORE INTO groups (group_id,joined_at) VALUES (?,?)", (gid, datetime.now().isoformat()))
+        conn.execute("INSERT OR IGNORE INTO groups (group_id,joined_at) VALUES (?,?)", (gid, now_local().isoformat()))
         conn.commit()
         conn.close()
     if user_id not in ADMIN_USER_IDS: return
@@ -511,7 +541,7 @@ def handle_text(event):
     elif text.startswith("/新增課程 ") or text.startswith("/加課 "):
         desc = text.split(" ",1)[1].strip()
         try:
-            today = date.today().isoformat()
+            today = today_local().isoformat()
             prompt = f"今天是{today}。從以下文字提取課程資訊，只回傳JSON：{{\"title\":\"\",\"course_date\":\"YYYY-MM-DD\",\"course_time\":\"HH:MM\",\"location\":\"\",\"description\":\"\"}}\n用戶：{desc}"
             resp = requests.post("https://api.anthropic.com/v1/messages",
                 headers={"Content-Type":"application/json"},
@@ -524,7 +554,7 @@ def handle_text(event):
             c = json.loads(ai_text.strip())
             conn = get_db()
             cur = conn.execute("INSERT INTO courses (title,course_date,course_time,location,description,image_url,remind_value,remind_unit,remind_interval_value,remind_interval_unit,created_at) VALUES (?,?,?,?,?,?,30,'days',7,'days',?)",
-                (c["title"],c["course_date"],c.get("course_time","09:00"),c.get("location",""),c.get("description",""),"",datetime.now().isoformat()))
+                (c["title"],c["course_date"],c.get("course_time","09:00"),c.get("location",""),c.get("description",""),"",now_local().isoformat()))
             cid = cur.lastrowid
             conn.commit()
             conn.close()
@@ -548,7 +578,7 @@ def handle_join(event):
     if event["source"]["type"] == "group":
         gid = event["source"]["groupId"]
         conn = get_db()
-        conn.execute("INSERT OR IGNORE INTO groups (group_id,joined_at) VALUES (?,?)", (gid, datetime.now().isoformat()))
+        conn.execute("INSERT OR IGNORE INTO groups (group_id,joined_at) VALUES (?,?)", (gid, now_local().isoformat()))
         conn.commit()
         conn.close()
 
