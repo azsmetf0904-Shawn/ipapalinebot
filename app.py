@@ -488,31 +488,56 @@ def send_scheduled_now(sid):
 @app.route("/admin/ai-parse", methods=["POST"])
 def ai_parse_course():
     if not check_admin(request): return jsonify({"error":"unauthorized"}),401
-    text = request.json.get("text","").strip()
-    image_url = request.json.get("image_url","").strip()
-    if not text and not image_url: return jsonify({"ok":False,"error":"請輸入課程描述或圖片"})
+    text = ""
+    image_b64 = ""
+    image_media_type = "image/jpeg"
+    image_url = ""
+
+    if request.content_type and "multipart" in request.content_type:
+        text = request.form.get("text","").strip()
+        if "image" in request.files:
+            f = request.files["image"]
+            image_data = f.read()
+            image_b64 = base64.b64encode(image_data).decode()
+            image_media_type = f.content_type or "image/jpeg"
+    else:
+        data = request.get_json() or {}
+        text = data.get("text","").strip()
+        image_b64 = data.get("image_b64","").strip()
+        image_url = data.get("image_url","").strip()
+        image_media_type = data.get("image_media_type","image/jpeg")
+
+    if not text and not image_b64 and not image_url:
+        return jsonify({"ok":False,"error":"請輸入課程描述或上傳圖片"})
+
     today = today_local().isoformat()
-    prompt = f"""今天是 {today}。請從以下內容提取課程資訊，只回傳 JSON，不要其他文字：
+    prompt = f"""今天是 {today}。請從圖片或文字中提取課程資訊，只回傳 JSON：
 {{"title":"課程名稱","course_date":"YYYY-MM-DD","course_time":"HH:MM","location":"地點或空字串","description":"說明或空字串","remind_value":30,"remind_unit":"days","remind_interval_value":7,"remind_interval_unit":"days"}}
-用戶輸入：{text}"""
+相對日期請根據今天 {today} 計算。用戶輸入：{text}"""
+
     try:
-        msg_content = [{"type":"text","text":prompt}]
-        if image_url:
-            msg_content = [
-                {"type":"image","source":{"type":"url","url":image_url}},
-                {"type":"text","text":prompt}
-            ]
+        msg_content = []
+        if image_b64:
+            msg_content.append({"type":"image","source":{"type":"base64","media_type":image_media_type,"data":image_b64}})
+        elif image_url:
+            msg_content.append({"type":"image","source":{"type":"url","url":image_url}})
+        msg_content.append({"type":"text","text":prompt})
+
         resp = requests.post("https://api.anthropic.com/v1/messages",
             headers={"Content-Type":"application/json"},
-            json={"model":"claude-sonnet-4-20250514","max_tokens":500,
+            json={"model":"claude-sonnet-4-20250514","max_tokens":600,
                   "messages":[{"role":"user","content":msg_content}]})
-        ai_text = resp.json()["content"][0]["text"].strip()
+        result = resp.json()
+        if "error" in result:
+            return jsonify({"ok":False,"error":result["error"].get("message","API錯誤")})
+        ai_text = result["content"][0]["text"].strip()
         if "```" in ai_text:
             ai_text = ai_text.split("```")[1]
             if ai_text.startswith("json"): ai_text = ai_text[4:]
         c = json.loads(ai_text.strip())
         return jsonify({"ok":True,"course":c})
     except Exception as e:
+        logger.error(f"AI parse error: {e}")
         return jsonify({"ok":False,"error":str(e)})
 
 @app.route("/admin/check-reminders", methods=["POST"])
