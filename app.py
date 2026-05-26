@@ -32,6 +32,7 @@ LINE_CHANNEL_SECRET      = os.environ["LINE_CHANNEL_SECRET"]
 LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 ADMIN_USER_IDS           = [x.strip() for x in os.environ.get("ADMIN_USER_IDS", "").split(",") if x.strip()]
 ADMIN_PASSWORD           = os.environ.get("ADMIN_PASSWORD", "ipapa2026")
+logger.info(f"[DEBUG] ADMIN_PASSWORD='{ADMIN_PASSWORD}'")
 DATABASE_URL             = os.environ["DATABASE_URL"]          # Railway 自動注入
 DEFAULT_GROUP_IDS        = [x.strip() for x in os.environ.get("DEFAULT_GROUP_IDS", "").split(",") if x.strip()]
 IMGBB_API_KEY            = os.environ.get("IMGBB_API_KEY", "")
