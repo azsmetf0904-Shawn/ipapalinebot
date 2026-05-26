@@ -36,11 +36,40 @@ DATABASE_URL             = os.environ["DATABASE_URL"]          # Railway 自動�
 DEFAULT_GROUP_IDS        = [x.strip() for x in os.environ.get("DEFAULT_GROUP_IDS", "").split(",") if x.strip()]
 IMGBB_API_KEY            = os.environ.get("IMGBB_API_KEY", "")
 APP_URL                  = os.environ.get("APP_URL", "")       # e.g. https://xxx.railway.app
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 HEADERS = {
     "Content-Type": "application/json",
     "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
 }
+
+def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image/jpeg",
+               image_url: str = "", max_tokens: int = 800) -> str:
+    """呼叫 Gemini API，回傳純文字結果"""
+    GEMINI_URL = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+                  f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}")
+    parts = []
+    if image_b64:
+        parts.append({"inline_data": {"mime_type": image_media_type, "data": image_b64}})
+    elif image_url:
+        # Gemini 支援直接傳圖片 URL
+        img_resp = requests.get(image_url, timeout=10)
+        b64 = base64.b64encode(img_resp.content).decode()
+        mime = img_resp.headers.get("Content-Type", "image/jpeg").split(";")[0]
+        parts.append({"inline_data": {"mime_type": mime, "data": b64}})
+    parts.append({"text": prompt})
+
+    body = {
+        "contents": [{"parts": parts}],
+        "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.1}
+    }
+    resp = requests.post(GEMINI_URL, headers={"Content-Type": "application/json"},
+                         json=body, timeout=30)
+    result = resp.json()
+    if "error" in result:
+        raise Exception(result["error"].get("message", "Gemini API 錯誤"))
+    return result["candidates"][0]["content"]["parts"][0]["text"].strip()
+
 
 def fetch_group_name(group_id: str) -> str:
     """呼叫 LINE API 取得群組名稱，失敗回傳空字串"""
@@ -898,21 +927,9 @@ def ai_parse_course():
               f'相對日期（例如「下週五」）請根據今天 {today} 計算實際日期。\n'
               f'用戶輸入：{text}')
     try:
-        msg_content = []
-        if image_b64:
-            msg_content.append({"type":"image","source":{"type":"base64","media_type":image_media_type,"data":image_b64}})
-        elif image_url:
-            msg_content.append({"type":"image","source":{"type":"url","url":image_url}})
-        msg_content.append({"type":"text","text":prompt})
-
-        resp = requests.post("https://api.anthropic.com/v1/messages",
-            headers={"Content-Type":"application/json"},
-            json={"model":"claude-sonnet-4-20250514","max_tokens":600,
-                  "messages":[{"role":"user","content":msg_content}]}, timeout=30)
-        result = resp.json()
-        if "error" in result:
-            return jsonify({"ok":False,"error":result["error"].get("message","API錯誤")})
-        ai_text = result["content"][0]["text"].strip()
+        ai_text = gemini_call(prompt, image_b64=image_b64,
+                              image_media_type=image_media_type,
+                              image_url=image_url, max_tokens=600)
         if "```" in ai_text:
             ai_text = ai_text.split("```")[1]
             if ai_text.startswith("json"): ai_text = ai_text[4:]
@@ -921,6 +938,7 @@ def ai_parse_course():
     except Exception as e:
         logger.error(f"AI parse error: {e}")
         return jsonify({"ok":False,"error":str(e)})
+
 
 @app.route("/admin/ai-parse-broadcast", methods=["POST"])
 def ai_parse_broadcast():
@@ -967,27 +985,14 @@ def ai_parse_broadcast():
     )
 
     try:
-        msg_content = []
-        if image_b64:
-            msg_content.append({"type":"image","source":{"type":"base64","media_type":image_media_type,"data":image_b64}})
-        elif image_url:
-            msg_content.append({"type":"image","source":{"type":"url","url":image_url}})
-        msg_content.append({"type":"text","text":prompt})
-
-        resp = requests.post("https://api.anthropic.com/v1/messages",
-            headers={"Content-Type":"application/json"},
-            json={"model":"claude-sonnet-4-20250514","max_tokens":800,
-                  "messages":[{"role":"user","content":msg_content}]}, timeout=30)
-        result = resp.json()
-        if "error" in result:
-            return jsonify({"ok":False,"error":result["error"].get("message","API錯誤")})
-        ai_text = result["content"][0]["text"].strip()
+        ai_text = gemini_call(prompt, image_b64=image_b64,
+                              image_media_type=image_media_type,
+                              image_url=image_url, max_tokens=800)
         if "```" in ai_text:
             ai_text = ai_text.split("```")[1]
             if ai_text.startswith("json"): ai_text = ai_text[4:]
         c = json.loads(ai_text.strip())
 
-        # 確保 start_time 帶台灣時區
         st = c.get("start_time","")
         if st:
             try:
@@ -1095,11 +1100,7 @@ def handle_text(event):
             prompt = (f"今天是{today}（台灣時間）。從以下文字提取課程資訊，只回傳JSON：\n"
                       f'{{"title":"","course_date":"YYYY-MM-DD","course_time":"HH:MM","location":"","description":""}}\n'
                       f"用戶：{desc}")
-            resp = requests.post("https://api.anthropic.com/v1/messages",
-                headers={"Content-Type":"application/json"},
-                json={"model":"claude-sonnet-4-20250514","max_tokens":300,
-                      "messages":[{"role":"user","content":prompt}]}, timeout=30)
-            ai_text = resp.json()["content"][0]["text"].strip()
+            ai_text = gemini_call(prompt, max_tokens=300)
             if "```" in ai_text:
                 ai_text = ai_text.split("```")[1]
                 if ai_text.startswith("json"): ai_text = ai_text[4:]
