@@ -545,8 +545,8 @@ def check_admin(req) -> bool:
 # ── Static ──
 @app.route("/admin")
 def admin_page():
-    # admin.html 放在專案根目錄（與 app.py 同層）
-    return send_from_directory(".", "admin.html")
+    # admin.html 放在 static/ 資料夾
+    return send_from_directory("static", "admin.html")
 
 @app.route("/")
 def index():
