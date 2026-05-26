@@ -42,6 +42,19 @@ HEADERS = {
     "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
 }
 
+def fetch_group_name(group_id: str) -> str:
+    """呼叫 LINE API 取得群組名稱，失敗回傳空字串"""
+    try:
+        r = requests.get(
+            f"https://api.line.me/v2/bot/group/{group_id}/summary",
+            headers=HEADERS, timeout=8
+        )
+        if r.status_code == 200:
+            return r.json().get("groupName", "")
+    except Exception as e:
+        logger.warning(f"fetch_group_name {group_id}: {e}")
+    return ""
+
 # ── PostgreSQL 連線 ──
 def get_db():
     """每次請求建立新連線（Railway 不需 connection pool 設定）"""
@@ -656,6 +669,35 @@ def trigger_reminders():
     check_scheduled_broadcasts()
     return jsonify({"ok":True,"tw_date":today_tw().isoformat()})
 
+@app.route("/admin/groups/sync-names", methods=["POST"])
+def sync_group_names():
+    """一鍵同步所有群組名稱（呼叫 LINE API）"""
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT group_id FROM groups")
+    rows = cur.fetchall()
+    updated = 0
+    for row in rows:
+        gid = row["group_id"]
+        name = fetch_group_name(gid)
+        if name:
+            cur.execute("UPDATE groups SET group_name=%s WHERE group_id=%s", (name, gid))
+            updated += 1
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True, "total": len(rows), "updated": updated})
+
+@app.route("/admin/groups/<gid>/sync-name", methods=["POST"])
+def sync_one_group_name(gid):
+    """同步單一群組名稱"""
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    name = fetch_group_name(gid)
+    if not name:
+        return jsonify({"ok": False, "error": "無法取得群組名稱（機器人可能已離開該群組）"})
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("UPDATE groups SET group_name=%s WHERE group_id=%s", (name, gid))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True, "group_name": name})
+
 # ── Webhook ──
 def handle_text(event):
     user_id = event["source"].get("userId","")
@@ -665,8 +707,19 @@ def handle_text(event):
     if event["source"]["type"] == "group":
         gid = event["source"]["groupId"]
         conn = get_db(); cur = conn.cursor()
-        cur.execute("INSERT INTO groups (group_id,joined_at) VALUES (%s,%s) ON CONFLICT DO NOTHING",
-                    (gid, isonow()))
+        # 若群組已存在且有名稱則不重複呼叫 LINE API
+        cur.execute("SELECT group_name FROM groups WHERE group_id=%s", (gid,))
+        row = cur.fetchone()
+        if row is None:
+            group_name = fetch_group_name(gid)
+            cur.execute("""
+                INSERT INTO groups (group_id, joined_at, group_name)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (group_id) DO UPDATE SET group_name = EXCLUDED.group_name
+            """, (gid, isonow(), group_name))
+        elif not row["group_name"]:
+            group_name = fetch_group_name(gid)
+            cur.execute("UPDATE groups SET group_name=%s WHERE group_id=%s", (group_name, gid))
         conn.commit(); cur.close(); conn.close()
 
     if user_id not in ADMIN_USER_IDS:
@@ -734,10 +787,15 @@ def handle_text(event):
 def handle_join(event):
     if event["source"]["type"] == "group":
         gid = event["source"]["groupId"]
+        group_name = fetch_group_name(gid)
         conn = get_db(); cur = conn.cursor()
-        cur.execute("INSERT INTO groups (group_id,joined_at) VALUES (%s,%s) ON CONFLICT DO NOTHING",
-                    (gid, isonow()))
+        cur.execute("""
+            INSERT INTO groups (group_id, joined_at, group_name)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (group_id) DO UPDATE SET group_name = EXCLUDED.group_name
+        """, (gid, isonow(), group_name))
         conn.commit(); cur.close(); conn.close()
+        logger.info(f"Group joined: {gid} name={group_name!r}")
 
 def handle_leave(event):
     if event["source"]["type"] == "group":
