@@ -240,9 +240,15 @@ def push_to_groups(messages: list) -> tuple[int, int]:
     for gid in groups:
         r = requests.post("https://api.line.me/v2/bot/message/push", headers=HEADERS,
             json={"to": gid, "messages": messages}, timeout=10)
-        logger.info(f"Push {gid[:20]}: {r.status_code}")
         if r.status_code == 200:
             ok += 1
+            logger.info(f"Push {gid[:20]}: OK")
+        else:
+            try:
+                err_body = r.json()
+            except Exception:
+                err_body = r.text[:200]
+            logger.error(f"Push {gid[:20]}: {r.status_code} {err_body}")
     return ok, len(groups)
 
 def push_text(text: str):
@@ -655,6 +661,8 @@ def send_course_now(cid):
         msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
     msgs.append({"type":"text","text":text})
     ok, total = push_to_groups(msgs)
+    if ok == 0 and total > 0:
+        return jsonify({"ok":ok,"total":total,"error":f"推播失敗（0/{total} 群組），請確認機器人是否在群組中，並查看 Railway 日誌"})
     return jsonify({"ok":ok,"total":total})
 
 @app.route("/admin/send", methods=["POST"])
