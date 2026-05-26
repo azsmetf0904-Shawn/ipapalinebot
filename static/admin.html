@@ -409,6 +409,37 @@ textarea{resize:vertical;min-height:72px}
             </div>
           </div>
         </div>
+        <div class="card" style="background:linear-gradient(135deg,#F0F7FF 0%,#F5F0FF 100%);border-color:#C5D8F8">
+          <div class="card-head" style="margin-bottom:12px">
+            <span class="card-title" style="color:#5B3FE0"><i class="ti ti-sparkles"></i> AI 智慧建立排程</span>
+            <span style="font-size:11px;color:#8B7FBB;background:#EDE9FF;padding:3px 9px;border-radius:20px">上傳圖片或輸入文字，AI 自動解析並填入排程</span>
+          </div>
+          <div class="grid2" style="gap:12px">
+            <div class="fg span2">
+              <label style="color:#5B3FE0">文字描述（可與圖片並用）</label>
+              <textarea id="ai-sched-text" placeholder="例：幫我建立一個6月15日下午2點在台北的說明會排程，提前30天開始提醒，每7天提醒一次" style="min-height:72px;border-color:#C5D8F8"></textarea>
+            </div>
+            <div class="fg">
+              <label style="color:#5B3FE0">上傳圖片（活動海報、截圖等）</label>
+              <input type="file" id="ai-sched-img" accept="image/*" style="padding:6px;border:1px dashed #C5D8F8;border-radius:8px;width:100%;background:#fff;font-size:12px;cursor:pointer">
+              <div id="ai-sched-preview" style="margin-top:6px;display:none"><img id="ai-sched-preview-img" style="max-height:120px;border-radius:8px;border:1px solid #E0D8FF"></div>
+            </div>
+            <div class="fg" style="display:flex;flex-direction:column;gap:8px;justify-content:flex-end">
+              <div style="background:#fff;border:1px solid #E0D8FF;border-radius:10px;padding:10px 12px;font-size:12px;color:#6B5FBB;line-height:1.7">
+                <div><i class="ti ti-info-circle" style="font-size:13px;vertical-align:-2px"></i> AI 會自動識別：</div>
+                <div>・活動名稱、日期時間、地點</div>
+                <div>・提前天數、提醒間隔</div>
+                <div>・完整廣播訊息內容</div>
+              </div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:14px;flex-wrap:wrap">
+            <button class="btn btn-primary" style="background:#5B3FE0;border-color:#5B3FE0" onclick="aiParseBroadcast()">
+              <i class="ti ti-sparkles"></i> AI 解析並填入
+            </button>
+            <span id="ai-sched-status" style="font-size:12px;color:#888"></span>
+          </div>
+        </div>
         <div class="card">
           <div class="card-head"><span class="card-title"><i class="ti ti-plus"></i> 新增排程廣播</span></div>
           <div class="grid2">
@@ -1498,6 +1529,84 @@ function renderScheds(){
     </div>`).join('') : `<div style="text-align:center;color:#999;padding:24px">${_scheds.length?'沒有符合條件的排程':'尚無排程廣播'}</div>`;
 }
 
+// ── AI 智慧建立排程廣播 ──
+document.addEventListener('DOMContentLoaded', () => {
+  const imgInput = document.getElementById('ai-sched-img');
+  if(imgInput) imgInput.addEventListener('change', function(){
+    const file = this.files[0];
+    const preview = document.getElementById('ai-sched-preview');
+    const previewImg = document.getElementById('ai-sched-preview-img');
+    if(file && preview && previewImg){
+      const reader = new FileReader();
+      reader.onload = e => { previewImg.src = e.target.result; preview.style.display='block'; };
+      reader.readAsDataURL(file);
+    } else if(preview) {
+      preview.style.display='none';
+    }
+  });
+});
+
+async function aiParseBroadcast(){
+  const text = document.getElementById('ai-sched-text').value.trim();
+  const imgFile = document.getElementById('ai-sched-img').files[0];
+  const status = document.getElementById('ai-sched-status');
+  if(!text && !imgFile){ toast('請輸入描述或上傳圖片','err'); return; }
+
+  status.textContent = '⏳ AI 解析中...';
+  status.style.color = '#888';
+
+  try {
+    let body, headers = {'X-Admin-Pass': ADMIN_PASS};
+    if(imgFile){
+      const fd = new FormData();
+      if(text) fd.append('text', text);
+      fd.append('image', imgFile);
+      body = fd;
+    } else {
+      headers['Content-Type'] = 'application/json';
+      body = JSON.stringify({text});
+    }
+    const resp = await fetch('/admin/ai-parse-broadcast', {method:'POST', headers, body});
+    const r = await resp.json();
+    if(!r.ok){ status.textContent = '❌ ' + (r.error||'解析失敗'); status.style.color='#C62828'; return; }
+
+    const b = r.broadcast;
+    // 填入表單欄位
+    if(b.title)   document.getElementById('s-title').value   = b.title;
+    if(b.content) document.getElementById('s-content').value = b.content;
+
+    // start_time：轉為 datetime-local 格式（YYYY-MM-DDTHH:MM）
+    if(b.start_time){
+      try{
+        const dt = new Date(b.start_time);
+        // 台灣時間 offset +8h
+        const local = new Date(dt.getTime() + (8*60 - dt.getTimezoneOffset())*60000 - dt.getTimezoneOffset()*0);
+        // 直接用 ISO 截掉時區後綴
+        const isoStr = b.start_time.replace(/\+08:00$|Z$/,'').slice(0,16);
+        document.getElementById('s-start').value = isoStr;
+      } catch(e){}
+    }
+
+    // 提醒間隔
+    const intervalDays = b.remind_interval_days || b.interval_value || 7;
+    document.getElementById('s-iv').value = intervalDays;
+    document.getElementById('s-iu').value = 'days';
+
+    // 顯示解析結果摘要
+    const remindBefore = b.remind_days_before || 30;
+    const eventDate = b.event_date ? `活動日期 ${b.event_date}` : '';
+    status.innerHTML = `✅ 解析完成！${eventDate ? eventDate + '・' : ''}提前 <b>${remindBefore}</b> 天開始・每 <b>${intervalDays}</b> 天提醒`;
+    status.style.color = '#06A847';
+
+    // 捲動到表單
+    document.getElementById('s-title').scrollIntoView({behavior:'smooth', block:'center'});
+    toast('AI 已填入排程資訊，請確認後儲存','ok');
+  } catch(e){
+    status.textContent = '❌ 網路錯誤：' + e.message;
+    status.style.color = '#C62828';
+  }
+}
+
 async function addScheduled(){
   const title   = document.getElementById('s-title').value.trim();
   const content = document.getElementById('s-content').value.trim();
@@ -1507,7 +1616,7 @@ async function addScheduled(){
     image_url:      document.getElementById('s-img').value.trim(),
     interval_value: parseFloat(document.getElementById('s-iv').value)||7,
     interval_unit:  document.getElementById('s-iu').value,
-    start_time:     (document.getElementById('s-start').value ? document.getElementById('s-start').value + ':00+08:00' : new Date().toISOString()),
+    start_time:     document.getElementById('s-start').value||new Date().toISOString(),
   };
   const r = await api('/admin/scheduled',{method:'POST',body:JSON.stringify(body)});
   if(r.ok){ toast('排程已新增！','ok'); ['s-title','s-content','s-img','s-start'].forEach(id=>document.getElementById(id).value=''); loadScheduled(); }
