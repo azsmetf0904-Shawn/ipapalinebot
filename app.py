@@ -196,10 +196,8 @@ def init_db():
             remind_unit           TEXT DEFAULT 'days',
             remind_interval_value INTEGER DEFAULT 7,
             remind_interval_unit  TEXT DEFAULT 'days',
-            bot_key               TEXT DEFAULT '',
             created_at            TIMESTAMPTZ NOT NULL
         );
-        ALTER TABLE courses ADD COLUMN IF NOT EXISTS bot_key TEXT DEFAULT '';
         CREATE TABLE IF NOT EXISTS course_reminders (
             id          SERIAL PRIMARY KEY,
             course_id   INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
@@ -283,6 +281,17 @@ def verify_signature(body: bytes, sig: str, secret: str = "") -> bool:
     s = secret or LINE_CHANNEL_SECRET
     h = hmac.new(s.encode(), body, hashlib.sha256).digest()
     return hmac.compare_digest(base64.b64encode(h).decode(), sig)
+
+def find_bot_by_signature(body: bytes, sig: str) -> str:
+    """逐一用所有 Bot 的 Secret 驗證簽名，回傳符合的 bot_key；找不到回傳空字串"""
+    for key, bot in BOTS.items():
+        secret = bot.get("secret", "")
+        if secret and verify_signature(body, sig, secret):
+            return key
+    # fallback：向下相容單一 Secret 環境
+    if LINE_CHANNEL_SECRET and verify_signature(body, sig, LINE_CHANNEL_SECRET):
+        return next(iter(BOTS), "")
+    return ""
 
 def push_to_groups(messages: list, bot_key: str = "") -> tuple[int, int, str]:
     """回傳 (ok_count, total_count, error_hint)
@@ -478,7 +487,6 @@ def check_broadcast_schedule_entries():
         src_type = row["source_type"]
         src_id   = row["source_id"]
         msgs = []
-        entry_bot_key = row.get("bot_key", "")
         try:
             if src_type == "course":
                 cur2 = conn.cursor()
@@ -488,8 +496,6 @@ def check_broadcast_schedule_entries():
                 """, (src_id,))
                 c = cur2.fetchone(); cur2.close()
                 if c:
-                    # 優先用課程自身的 bot_key，若無則用排程 entry 的 bot_key
-                    entry_bot_key = c.get("bot_key","") or entry_bot_key
                     cd = datetime.strptime(str(c["course_date"]), "%Y-%m-%d").date()
                     days_left = (cd - today_tw()).days
                     timing = "【今天上課】" if days_left==0 else f"【還有 {days_left} 天】" if days_left>0 else "【已結束】"
@@ -507,14 +513,13 @@ def check_broadcast_schedule_entries():
                 cur2.execute("SELECT * FROM scheduled_broadcasts WHERE id=%s", (src_id,))
                 b = cur2.fetchone(); cur2.close()
                 if b:
-                    entry_bot_key = b.get("bot_key","") or entry_bot_key
                     if b["image_url"]:
                         msgs.append({"type":"image","originalContentUrl":b["image_url"],"previewImageUrl":b["image_url"]})
                     msgs.append({"type":"text","text":b["content"]})
         except Exception as e:
             logger.error(f"[BcastEntry] build msg error: {e}")
         if msgs:
-            ok, total, _err = push_to_groups(msgs, bot_key=entry_bot_key)
+            ok, total, _err = push_to_groups(msgs)
             cur.execute(
                 "UPDATE broadcast_schedule_entries SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
                 (now_tw().isoformat(), total, row["id"])
@@ -690,11 +695,11 @@ def add_course():
     cur.execute("""
         INSERT INTO courses
           (category_id,title,course_date,course_time,location,description,image_url,
-           remind_value,remind_unit,remind_interval_value,remind_interval_unit,bot_key,created_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+           remind_value,remind_unit,remind_interval_value,remind_interval_unit,created_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
     """, (d.get("category_id"), title, course_date, d.get("course_time","09:00"),
           d.get("location",""), d.get("description",""), d.get("image_url",""),
-          rv, ru, iv, iu, d.get("bot_key","").strip(), isonow()))
+          rv, ru, iv, iu, isonow()))
     cid = cur.fetchone()["id"]
     conn.commit(); cur.close(); conn.close()
     dates = generate_reminders(cid, course_date, rv, ru, iv, iu)
@@ -715,10 +720,10 @@ def edit_course(cid):
     cur.execute("""
         UPDATE courses SET category_id=%s,title=%s,course_date=%s,course_time=%s,
         location=%s,description=%s,image_url=%s,remind_value=%s,remind_unit=%s,
-        remind_interval_value=%s,remind_interval_unit=%s,bot_key=%s WHERE id=%s
+        remind_interval_value=%s,remind_interval_unit=%s WHERE id=%s
     """, (d.get("category_id"), title, course_date, d.get("course_time","09:00"),
           d.get("location",""), d.get("description",""), d.get("image_url",""),
-          rv, ru, iv, iu, d.get("bot_key","").strip(), cid))
+          rv, ru, iv, iu, cid))
     conn.commit(); cur.close(); conn.close()
     dates = generate_reminders(cid, course_date, rv, ru, iv, iu)
     return jsonify({"ok":True,"remind_count":len(dates)})
@@ -1386,18 +1391,24 @@ def handle_text(event):
             f"/群組清單 — 查看群組\n\n"
             f"🌐 管理後台：\n{url}/admin")
 
-def handle_join(event):
+def handle_join(event, bot_key: str = ""):
     if event["source"]["type"] == "group":
         gid = event["source"]["groupId"]
-        group_name = fetch_group_name(gid)
+        headers = get_bot_headers(bot_key) if bot_key else HEADERS
+        try:
+            r = requests.get(f"https://api.line.me/v2/bot/group/{gid}/summary",
+                             headers=headers, timeout=8)
+            group_name = r.json().get("groupName","") if r.status_code==200 else ""
+        except Exception:
+            group_name = ""
         conn = get_db(); cur = conn.cursor()
         cur.execute("""
-            INSERT INTO groups (group_id, joined_at, group_name)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (group_id) DO UPDATE SET group_name = EXCLUDED.group_name
-        """, (gid, isonow(), group_name))
+            INSERT INTO groups (group_id, joined_at, group_name, bot_key)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (group_id) DO UPDATE SET group_name = EXCLUDED.group_name, bot_key = EXCLUDED.bot_key
+        """, (gid, isonow(), group_name, bot_key))
         conn.commit(); cur.close(); conn.close()
-        logger.info(f"Group joined: {gid} name={group_name!r}")
+        logger.info(f"Group joined: {gid} name={group_name!r} bot={bot_key!r}")
 
 def handle_leave(event):
     if event["source"]["type"] == "group":
@@ -1410,7 +1421,8 @@ def handle_leave(event):
 def webhook():
     sig = request.headers.get("X-Line-Signature","")
     body = request.get_data()
-    if not verify_signature(body, sig):
+    bot_key = find_bot_by_signature(body, sig)
+    if not bot_key:
         abort(400)
     for event in json.loads(body).get("events",[]):
         t = event.get("type")
@@ -1418,7 +1430,7 @@ def webhook():
             if t == "message" and event["message"]["type"] == "text":
                 handle_text(event)
             elif t == "join":
-                handle_join(event)
+                handle_join(event, bot_key=bot_key)
             elif t == "leave":
                 handle_leave(event)
         except Exception as e:
