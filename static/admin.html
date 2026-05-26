@@ -1206,6 +1206,13 @@ function dashSwitchView(v){
   document.getElementById('dash-view-list-btn').classList.toggle('active', !isCal);
 }
 
+function dashEditCourse(id){
+  // Navigate to courses panel first, then open edit form
+  go('courses', document.querySelector('.nav-item[onclick*="courses"]'));
+  // Wait for loadCourses to finish before populating form
+  setTimeout(() => editCourse(id), 600);
+}
+
 function dashCalPrev(){ _dashCalMonth--; if(_dashCalMonth<0){_dashCalMonth=11;_dashCalYear--;} dashRenderCal(); }
 function dashCalNext(){ _dashCalMonth++; if(_dashCalMonth>11){_dashCalMonth=0;_dashCalYear++;} dashRenderCal(); }
 
@@ -1265,7 +1272,8 @@ function dashRenderCal(){
         <span style="font-size:12px;font-weight:600;color:#06A847;white-space:nowrap">${c.course_date.slice(5)}</span>
         <span style="font-size:13px;flex:1">${esc(c.title)}</span>
         ${c.category_name?`<span class="badge bg-gray" style="font-size:10px">${esc(c.category_name)}</span>`:''}
-        <button class="btn btn-sm" onclick="sendCourseNow(${c.id})" style="flex-shrink:0"><i class="ti ti-send"></i></button>
+        <button class="btn btn-sm" onclick="dashEditCourse(${c.id})" title="編輯" style="flex-shrink:0;color:#555;border-color:#ddd"><i class="ti ti-pencil"></i></button>
+        <button class="btn btn-sm" onclick="sendCourseNow(${c.id})" style="flex-shrink:0" title="立即發送"><i class="ti ti-send"></i></button>
       </div>`).join('');
   } else {
     evDiv.innerHTML = '<div style="text-align:center;color:#bbb;font-size:12px;padding:12px">本月無課程</div>';
