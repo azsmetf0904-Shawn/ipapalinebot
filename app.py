@@ -238,17 +238,20 @@ def push_to_groups(messages: list) -> tuple[int, int]:
     groups = get_all_group_ids()
     ok = 0
     for gid in groups:
-        r = requests.post("https://api.line.me/v2/bot/message/push", headers=HEADERS,
-            json={"to": gid, "messages": messages}, timeout=10)
-        if r.status_code == 200:
-            ok += 1
-            logger.info(f"Push {gid[:20]}: OK")
-        else:
-            try:
-                err_body = r.json()
-            except Exception:
-                err_body = r.text[:200]
-            logger.error(f"Push {gid[:20]}: {r.status_code} {err_body}")
+        try:
+            r = requests.post("https://api.line.me/v2/bot/message/push", headers=HEADERS,
+                json={"to": gid, "messages": messages}, timeout=10)
+            if r.status_code == 200:
+                ok += 1
+                logger.info(f"Push {gid[:20]}: OK")
+            else:
+                try:
+                    err_body = r.json()
+                except Exception:
+                    err_body = r.text[:200]
+                logger.error(f"Push {gid[:20]}: {r.status_code} {err_body}")
+        except Exception as e:
+            logger.error(f"Push {gid[:20]}: exception {e}")
     return ok, len(groups)
 
 def push_text(text: str):
@@ -473,47 +476,6 @@ def init_db_route():
     init_db()
     return "DB initialized OK"
 
-@app.route("/admin/line-diagnose", methods=["POST"])
-def line_diagnose():
-    """診斷 LINE Bot 推播能力：驗證 Token、測試推播"""
-    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    results = {}
-
-    # 1. 驗證 Token
-    try:
-        vr = requests.get("https://api.line.me/v2/bot/info", headers=HEADERS, timeout=8)
-        if vr.status_code == 200:
-            bot_info = vr.json()
-            results["token"] = "ok"
-            results["bot_name"] = bot_info.get("displayName","")
-            results["bot_id"] = bot_info.get("userId","")
-        else:
-            results["token"] = f"error {vr.status_code}: {vr.text[:200]}"
-    except Exception as e:
-        results["token"] = f"exception: {e}"
-
-    # 2. 列出群組及推播狀態
-    groups = get_all_group_ids()
-    results["group_count"] = len(groups)
-    group_results = []
-    for gid in groups:
-        try:
-            pr = requests.post("https://api.line.me/v2/bot/message/push", headers=HEADERS,
-                json={"to": gid, "messages": [{"type":"text","text":"🔧 LINE 推播診斷測試（可忽略此訊息）"}]}, timeout=10)
-            if pr.status_code == 200:
-                group_results.append({"gid": gid[:20], "status": "ok"})
-            else:
-                try:
-                    err = pr.json()
-                except Exception:
-                    err = pr.text[:200]
-                group_results.append({"gid": gid[:20], "status": f"error {pr.status_code}", "detail": err})
-        except Exception as e:
-            group_results.append({"gid": gid[:20], "status": f"exception: {e}"})
-    results["groups"] = group_results
-
-    return jsonify(results)
-
 # ── Admin API ──
 
 @app.route("/admin/info", methods=["GET"])
@@ -702,8 +664,6 @@ def send_course_now(cid):
         msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
     msgs.append({"type":"text","text":text})
     ok, total = push_to_groups(msgs)
-    if ok == 0 and total > 0:
-        return jsonify({"ok":ok,"total":total,"error":f"推播失敗（0/{total} 群組），請確認機器人是否在群組中，並查看 Railway 日誌"})
     return jsonify({"ok":ok,"total":total})
 
 @app.route("/admin/send", methods=["POST"])
@@ -1172,12 +1132,7 @@ def ai_parse_broadcast():
         if "```" in ai_text:
             ai_text = ai_text.split("```")[1]
             if ai_text.startswith("json"): ai_text = ai_text[4:]
-        # 擷取第一個完整 JSON 物件（與 ai_parse_course 一致）
-        start = ai_text.find("{")
-        end   = ai_text.rfind("}") + 1
-        if start == -1 or end == 0:
-            raise Exception("AI 未回傳有效 JSON")
-        c = json.loads(ai_text[start:end].strip())
+        c = json.loads(ai_text.strip())
 
         st = c.get("start_time","")
         if st:
@@ -1256,18 +1211,26 @@ def handle_text(event):
 
     if event["source"]["type"] == "group":
         gid = event["source"]["groupId"]
+        src_type = "group"
+    elif event["source"]["type"] == "room":
+        gid = event["source"]["roomId"]
+        src_type = "room"
+    else:
+        src_type = None
+        gid = None
+
+    if gid:
         conn = get_db(); cur = conn.cursor()
-        # 若群組已存在且有名稱則不重複呼叫 LINE API
         cur.execute("SELECT group_name FROM groups WHERE group_id=%s", (gid,))
         row = cur.fetchone()
         if row is None:
-            group_name = fetch_group_name(gid)
+            group_name = fetch_group_name(gid) if src_type == "group" else ""
             cur.execute("""
-                INSERT INTO groups (group_id, joined_at, group_name)
-                VALUES (%s, %s, %s)
+                INSERT INTO groups (group_id, joined_at, group_name, group_type)
+                VALUES (%s, %s, %s, %s)
                 ON CONFLICT (group_id) DO UPDATE SET group_name = EXCLUDED.group_name
-            """, (gid, isonow(), group_name))
-        elif not row["group_name"]:
+            """, (gid, isonow(), group_name, src_type))
+        elif not row["group_name"] and src_type == "group":
             group_name = fetch_group_name(gid)
             cur.execute("UPDATE groups SET group_name=%s WHERE group_id=%s", (group_name, gid))
         conn.commit(); cur.close(); conn.close()
@@ -1331,24 +1294,35 @@ def handle_text(event):
             f"🌐 管理後台：\n{url}/admin")
 
 def handle_join(event):
-    if event["source"]["type"] == "group":
+    src_type = event["source"]["type"]
+    if src_type == "group":
         gid = event["source"]["groupId"]
         group_name = fetch_group_name(gid)
-        conn = get_db(); cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO groups (group_id, joined_at, group_name)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (group_id) DO UPDATE SET group_name = EXCLUDED.group_name
-        """, (gid, isonow(), group_name))
-        conn.commit(); cur.close(); conn.close()
-        logger.info(f"Group joined: {gid} name={group_name!r}")
+    elif src_type == "room":
+        gid = event["source"]["roomId"]
+        group_name = ""   # room 無法查名稱
+    else:
+        return
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO groups (group_id, joined_at, group_name, group_type)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (group_id) DO UPDATE SET group_name = EXCLUDED.group_name
+    """, (gid, isonow(), group_name, src_type))
+    conn.commit(); cur.close(); conn.close()
+    logger.info(f"Joined ({src_type}): {gid} name={group_name!r}")
 
 def handle_leave(event):
-    if event["source"]["type"] == "group":
+    src_type = event["source"]["type"]
+    if src_type == "group":
         gid = event["source"]["groupId"]
-        conn = get_db(); cur = conn.cursor()
-        cur.execute("DELETE FROM groups WHERE group_id=%s", (gid,))
-        conn.commit(); cur.close(); conn.close()
+    elif src_type == "room":
+        gid = event["source"]["roomId"]
+    else:
+        return
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("DELETE FROM groups WHERE group_id=%s", (gid,))
+    conn.commit(); cur.close(); conn.close()
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
