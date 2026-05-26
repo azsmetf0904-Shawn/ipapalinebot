@@ -110,8 +110,36 @@ textarea{resize:vertical;min-height:72px}
 .preview-box{background:#F5F5F0;border-radius:8px;padding:12px;font-size:13px;min-height:64px;white-space:pre-wrap;color:#666;border:1px solid #E8E8E4}
 .char-cnt{font-size:11px;color:#999;text-align:right;margin-top:4px}
 
-/* Section divider */
-.sep{height:1px;background:#E8E8E4;margin:16px 0}
+/* Calendar */
+.cal-nav{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.cal-month-label{font-size:15px;font-weight:600;color:#1A1A1A}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
+.cal-dow{text-align:center;font-size:11px;color:#999;font-weight:500;padding:4px 0;text-transform:uppercase;letter-spacing:.04em}
+.cal-day{min-height:80px;background:#FAFAF8;border:1px solid #E8E8E4;border-radius:6px;padding:4px;position:relative;overflow:hidden}
+.cal-day.other-month{background:#F5F5F0;opacity:.5}
+.cal-day.today{border-color:#06C755;background:#EDFBF3}
+.cal-day-num{font-size:11px;font-weight:500;color:#999;margin-bottom:3px;display:block}
+.cal-day.today .cal-day-num{color:#06A847;font-weight:700}
+.cal-event{font-size:10px;font-weight:500;padding:2px 5px;border-radius:3px;margin-bottom:2px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.4;color:#fff}
+.cal-event:hover{opacity:.85}
+.cal-view-toggle{display:flex;gap:6px}
+.view-btn{padding:5px 12px;font-size:12px;border-radius:6px;border:1px solid #E0E0DC;background:#fff;cursor:pointer;color:#666;font-family:inherit}
+.view-btn.active{background:#06C755;border-color:#06C755;color:#fff}
+
+/* Scheduled announcement queue */
+.ann-queue-item{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:#FAFAF8;border:1px solid #E8E8E4;border-radius:8px;margin-bottom:8px}
+.ann-queue-time{font-size:12px;font-weight:600;color:#1A5CC4;white-space:nowrap;padding-top:1px;min-width:120px}
+.ann-queue-info{flex:1;min-width:0}
+.ann-queue-content{font-size:12px;color:#1A1A1A;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ann-queue-status{font-size:11px;color:#999;margin-top:2px}
+.ann-queue-actions{display:flex;gap:5px;flex-shrink:0}
+.ann-sent{opacity:.55}
+
+/* Tab switcher */
+.tab-bar{display:flex;gap:0;border-bottom:1px solid #E8E8E4;margin-bottom:16px}
+.tab-btn{padding:8px 16px;font-size:13px;border:none;background:none;cursor:pointer;color:#999;border-bottom:2px solid transparent;margin-bottom:-1px;font-family:inherit;transition:all .15s}
+.tab-btn.active{color:#06A847;border-bottom-color:#06C755;font-weight:500}
+
 
 /* Remind grid */
 .remind-grid{display:grid;grid-template-columns:80px 1fr 80px 1fr;gap:8px;align-items:end}
@@ -228,10 +256,16 @@ textarea{resize:vertical;min-height:72px}
         </div>
         <div class="card">
           <div class="card-head"><span class="card-title"><i class="ti ti-list"></i> 課程清單</span>
-            <span id="course-count-hint" style="font-size:12px;color:#999"></span>
+            <div style="display:flex;align-items:center;gap:10px">
+              <span id="course-count-hint" style="font-size:12px;color:#999"></span>
+              <div class="cal-view-toggle">
+                <button class="view-btn active" id="view-list-btn" onclick="switchView('list')"><i class="ti ti-list" style="font-size:13px"></i> 清單</button>
+                <button class="view-btn" id="view-cal-btn" onclick="switchView('calendar')"><i class="ti ti-calendar" style="font-size:13px"></i> 月曆</button>
+              </div>
+            </div>
           </div>
           <!-- 篩選列 -->
-          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
+          <div class="course-filter-row" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
             <input id="cf-keyword" placeholder="🔍 搜尋課程名稱…" style="width:160px;padding:6px 10px;font-size:12px" oninput="renderCourses()">
             <select id="cf-cat" style="font-size:12px;padding:6px 8px" onchange="renderCourses()">
               <option value="">全部分類</option>
@@ -259,21 +293,62 @@ textarea{resize:vertical;min-height:72px}
             </thead>
             <tbody id="course-tbody"><tr><td colspan="6" style="text-align:center;color:#999;padding:20px">載入中...</td></tr></tbody>
           </table>
+
+          <!-- 月曆視圖 -->
+          <div id="calendar-view" style="display:none">
+            <div class="cal-nav">
+              <button class="btn btn-sm" onclick="calPrev()"><i class="ti ti-chevron-left"></i></button>
+              <span class="cal-month-label" id="cal-month-label"></span>
+              <button class="btn btn-sm" onclick="calNext()"><i class="ti ti-chevron-right"></i></button>
+            </div>
+            <div class="cal-grid" id="cal-grid">
+              <div class="cal-dow">日</div><div class="cal-dow">一</div><div class="cal-dow">二</div>
+              <div class="cal-dow">三</div><div class="cal-dow">四</div><div class="cal-dow">五</div><div class="cal-dow">六</div>
+            </div>
+          </div>
         </div>
       </div>
 
       <!-- BROADCAST -->
       <div id="panel-broadcast" class="panel">
         <div class="card">
-          <div class="card-head"><span class="card-title"><i class="ti ti-speakerphone"></i> 立即發送公告</span><span style="font-size:12px;color:#999" id="broadcast-group-hint"></span></div>
-          <div class="fg"><label>公告內容 *</label><textarea id="ann-text" placeholder="輸入公告內容..." style="min-height:120px" oninput="previewAnn()"></textarea><div class="char-cnt" id="ann-cnt">0 字</div></div>
-          <div class="fg"><label>附圖網址（選填）</label><input id="ann-img" type="url" placeholder="https://..." oninput="previewAnn()"></div>
-          <div class="sep"></div>
-          <div style="font-size:12px;color:#666;font-weight:500;margin-bottom:8px">預覽</div>
-          <div class="preview-box" id="ann-preview">（輸入內容後顯示預覽）</div>
-          <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
-            <button class="btn" onclick="document.getElementById('ann-text').value='';previewAnn()">清除</button>
-            <button class="btn btn-primary" onclick="sendAnn()"><i class="ti ti-send"></i> 立即發送</button>
+          <div class="card-head"><span class="card-title"><i class="ti ti-speakerphone"></i> 發送公告</span><span style="font-size:12px;color:#999" id="broadcast-group-hint"></span></div>
+          <div class="tab-bar">
+            <button class="tab-btn active" id="tab-immediate" onclick="switchAnnTab('immediate')">立即發送</button>
+            <button class="tab-btn" id="tab-scheduled" onclick="switchAnnTab('scheduled')">排程發送</button>
+          </div>
+
+          <!-- 立即發送 -->
+          <div id="ann-tab-immediate">
+            <div class="fg"><label>公告內容 *</label><textarea id="ann-text" placeholder="輸入公告內容..." style="min-height:120px" oninput="previewAnn()"></textarea><div class="char-cnt" id="ann-cnt">0 字</div></div>
+            <div class="fg"><label>附圖網址（選填）</label><input id="ann-img" type="url" placeholder="https://..." oninput="previewAnn()"></div>
+            <div class="sep"></div>
+            <div style="font-size:12px;color:#666;font-weight:500;margin-bottom:8px">預覽</div>
+            <div class="preview-box" id="ann-preview">（輸入內容後顯示預覽）</div>
+            <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+              <button class="btn" onclick="document.getElementById('ann-text').value='';previewAnn()">清除</button>
+              <button class="btn btn-primary" onclick="sendAnn()"><i class="ti ti-send"></i> 立即發送</button>
+            </div>
+          </div>
+
+          <!-- 排程發送 -->
+          <div id="ann-tab-scheduled" style="display:none">
+            <div class="grid2">
+              <div class="fg"><label>公告標題（內部識別）</label><input id="sann-title" placeholder="例：五月份活動通知"></div>
+              <div class="fg"><label>發送時間 *</label><input id="sann-send-at" type="datetime-local"></div>
+              <div class="fg span2"><label>公告內容 *</label><textarea id="sann-content" placeholder="輸入公告內容..." style="min-height:100px"></textarea></div>
+              <div class="fg span2"><label>附圖網址（選填）</label><input id="sann-img" type="url" placeholder="https://..."></div>
+            </div>
+            <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+              <button class="btn btn-primary" onclick="addSchedAnn()"><i class="ti ti-clock-play"></i> 加入排程</button>
+            </div>
+
+            <div class="sep"></div>
+            <div style="font-size:13px;font-weight:600;color:#1A1A1A;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between">
+              <span>待發佇列</span>
+              <span id="sann-queue-hint" style="font-size:12px;color:#999;font-weight:400"></span>
+            </div>
+            <div id="sann-list"><div style="text-align:center;color:#999;padding:16px">載入中...</div></div>
           </div>
         </div>
       </div>
@@ -700,7 +775,7 @@ function renderCourses(){
       <td><strong>${esc(c.title)}</strong></td>
       <td style="white-space:nowrap">${c.course_date} ${c.course_time}</td>
       <td>${esc(c.location)||'—'}</td>
-      <td>${c.category_name?`<span class="badge bg-gray">${esc(c.category_name)}</span>`:'—'}</td>
+      <td>${c.category_name?`<span class="badge" style="background:${esc(c.category_color||'#9E9E9E')}22;color:${esc(c.category_color||'#666')};border:1px solid ${esc(c.category_color||'#9E9E9E')}44">${esc(c.category_name)}</span>`:'—'}</td>
       <td><div class="prog"><div class="prog-fill" style="width:${pct(c.sent_count,c.remind_count)}%"></div></div><span style="font-size:11px;color:#999">${c.sent_count||0}/${c.remind_count||0}</span></td>
       <td><div style="display:flex;gap:5px">
         <button class="btn btn-sm" onclick="sendCourseNow(${c.id})" title="立即發送"><i class="ti ti-send"></i></button>
@@ -708,6 +783,9 @@ function renderCourses(){
         <button class="btn btn-sm btn-danger" onclick="deleteCourse(${c.id})" title="刪除"><i class="ti ti-trash"></i></button>
       </div></td>
     </tr>`).join('') : `<tr><td colspan="6" style="text-align:center;color:#999;padding:24px">${_courses.length?'沒有符合條件的課程':'尚無課程，請使用上方表單新增'}</td></tr>`;
+
+  // 若月曆視圖開著，一併重繪
+  if(_curView === 'calendar') renderCalendar();
 }
 
 function editCourse(id){
@@ -799,6 +877,110 @@ async function aiParse(){
   } else toast(r.error||'解析失敗','err');
 }
 
+// ── View toggle ──
+let _curView = 'list';
+let _calYear, _calMonth;
+
+function switchView(view){
+  _curView = view;
+  document.getElementById('view-list-btn').classList.toggle('active', view==='list');
+  document.getElementById('view-cal-btn').classList.toggle('active', view==='calendar');
+
+  const tbl = document.querySelector('#panel-courses .tbl');
+  const calView = document.getElementById('calendar-view');
+  const filterRow = document.querySelector('.course-filter-row');
+
+  if(view === 'list'){
+    if(tbl) tbl.style.display='';
+    if(filterRow) filterRow.style.display='';
+    calView.style.display = 'none';
+  } else {
+    if(tbl) tbl.style.display='none';
+    if(filterRow) filterRow.style.display='none';
+    calView.style.display = '';
+    const now = new Date();
+    if(!_calYear){ _calYear=now.getFullYear(); _calMonth=now.getMonth(); }
+    renderCalendar();
+  }
+}
+
+function calPrev(){
+  _calMonth--;
+  if(_calMonth < 0){ _calMonth=11; _calYear--; }
+  renderCalendar();
+}
+
+function calNext(){
+  _calMonth++;
+  if(_calMonth > 11){ _calMonth=0; _calYear++; }
+  renderCalendar();
+}
+
+function renderCalendar(){
+  const y = _calYear, m = _calMonth;
+  const monthNames = ['一月','二月','三月','四月','五月','六月','七月','八月','九月','十月','十一月','十二月'];
+  document.getElementById('cal-month-label').textContent = `${y} 年 ${monthNames[m]}`;
+
+  const firstDay = new Date(y, m, 1).getDay();
+  const daysInMonth = new Date(y, m+1, 0).getDate();
+  const daysInPrev  = new Date(y, m, 0).getDate();
+  const todayStr    = today();
+
+  // build date→courses map
+  const dateMap = {};
+  _courses.forEach(c => {
+    const d = c.course_date;
+    if(!dateMap[d]) dateMap[d] = [];
+    dateMap[d].push(c);
+  });
+
+  const grid = document.getElementById('cal-grid');
+  // Remove old day cells (keep first 7 dow headers)
+  while(grid.children.length > 7) grid.removeChild(grid.lastChild);
+
+  // Prev month filler
+  for(let i = firstDay-1; i >= 0; i--){
+    const d = document.createElement('div');
+    d.className = 'cal-day other-month';
+    d.innerHTML = `<span class="cal-day-num">${daysInPrev-i}</span>`;
+    grid.appendChild(d);
+  }
+
+  for(let day = 1; day <= daysInMonth; day++){
+    const dateStr = `${y}-${String(m+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+    const isToday = dateStr === todayStr;
+    const d = document.createElement('div');
+    d.className = 'cal-day' + (isToday?' today':'');
+    let html = `<span class="cal-day-num">${day}</span>`;
+    (dateMap[dateStr]||[]).forEach(c => {
+      const color = c.category_color || '#9E9E9E';
+      const title = esc(c.title);
+      html += `<div class="cal-event" style="background:${esc(color)}" title="${title} ${c.course_time}" onclick="editCourse(${c.id})">${title}</div>`;
+    });
+    d.innerHTML = html;
+    grid.appendChild(d);
+  }
+
+  // Next month filler
+  const total = firstDay + daysInMonth;
+  const rem = total % 7 === 0 ? 0 : 7 - (total % 7);
+  for(let i = 1; i <= rem; i++){
+    const d = document.createElement('div');
+    d.className = 'cal-day other-month';
+    d.innerHTML = `<span class="cal-day-num">${i}</span>`;
+    grid.appendChild(d);
+  }
+}
+
+// ── Announce tab ──
+function switchAnnTab(tab){
+  document.getElementById('tab-immediate').classList.toggle('active', tab==='immediate');
+  document.getElementById('tab-scheduled').classList.toggle('active', tab==='scheduled');
+  document.getElementById('ann-tab-immediate').style.display = tab==='immediate' ? '' : 'none';
+  document.getElementById('ann-tab-scheduled').style.display = tab==='scheduled' ? '' : 'none';
+  if(tab==='scheduled') loadSchedAnns();
+}
+
 // ── Announce ──
 function previewAnn(){
   const text = document.getElementById('ann-text').value;
@@ -815,6 +997,78 @@ async function sendAnn(){
   const r = await api('/admin/send',{method:'POST',body:JSON.stringify({text,image_url:img})});
   if(r.ok||r.ok===0){ toast(`公告已發送至 ${r.ok}/${r.total} 個群組 ✓`,'ok'); document.getElementById('ann-text').value=''; document.getElementById('ann-img').value=''; previewAnn(); }
   else toast('發送失敗','err');
+}
+
+// ── Scheduled Announcements ──
+let _schedAnns = [];
+
+async function loadSchedAnns(){
+  const r = await api('/admin/scheduled-announcements');
+  _schedAnns = r.announcements||[];
+  renderSchedAnns();
+}
+
+function renderSchedAnns(){
+  const pending = _schedAnns.filter(a=>!a.sent);
+  const sent    = _schedAnns.filter(a=>a.sent);
+  const hint = document.getElementById('sann-queue-hint');
+  if(hint) hint.textContent = `待發 ${pending.length} 筆，已發 ${sent.length} 筆`;
+
+  const div = document.getElementById('sann-list');
+  if(!_schedAnns.length){
+    div.innerHTML = '<div style="text-align:center;color:#999;padding:16px">尚無排程公告</div>';
+    return;
+  }
+  div.innerHTML = _schedAnns.map(a=>`
+    <div class="ann-queue-item ${a.sent?'ann-sent':''}">
+      <div class="ann-queue-time">
+        ${a.sent
+          ? `<span class="badge bg-green" style="font-size:11px">已發送</span><br><span style="color:#999;font-weight:400">${(a.sent_at||'').slice(0,16).replace('T',' ')}</span>`
+          : `<i class="ti ti-clock" style="font-size:12px;vertical-align:-1px"></i> ${a.send_at.slice(0,16).replace('T',' ')}`}
+      </div>
+      <div class="ann-queue-info">
+        ${a.title ? `<div style="font-size:12px;font-weight:600;margin-bottom:2px">${esc(a.title)}</div>` : ''}
+        <div class="ann-queue-content">${esc(a.content)}</div>
+        ${a.image_url ? `<div class="ann-queue-status"><i class="ti ti-photo" style="font-size:11px"></i> 含附圖</div>` : ''}
+        ${a.sent ? `<div class="ann-queue-status">已發送至 ${a.group_count} 個群組</div>` : ''}
+      </div>
+      <div class="ann-queue-actions">
+        ${!a.sent ? `<button class="btn btn-sm" onclick="sendSchedAnnNow(${a.id})" title="立即發送"><i class="ti ti-send"></i></button>
+        <button class="btn btn-sm btn-danger" onclick="deleteSchedAnn(${a.id})" title="刪除"><i class="ti ti-trash"></i></button>` : ''}
+      </div>
+    </div>`).join('');
+}
+
+async function addSchedAnn(){
+  const content = document.getElementById('sann-content').value.trim();
+  const sendAt  = document.getElementById('sann-send-at').value;
+  if(!content){ toast('請填寫公告內容','err'); return; }
+  if(!sendAt) { toast('請選擇發送時間','err'); return; }
+  const body = {
+    title:     document.getElementById('sann-title').value.trim(),
+    content,
+    image_url: document.getElementById('sann-img').value.trim(),
+    send_at:   sendAt,
+  };
+  const r = await api('/admin/scheduled-announcements',{method:'POST',body:JSON.stringify(body)});
+  if(r.ok){
+    toast('排程公告已建立！','ok');
+    ['sann-title','sann-content','sann-img','sann-send-at'].forEach(id=>document.getElementById(id).value='');
+    loadSchedAnns();
+  } else toast(r.error||'建立失敗','err');
+}
+
+async function deleteSchedAnn(id){
+  if(!confirm('確定刪除此排程公告？')) return;
+  const r = await api(`/admin/scheduled-announcements/${id}`,{method:'DELETE'});
+  if(r.ok){ toast('已刪除','ok'); loadSchedAnns(); }
+  else toast('刪除失敗','err');
+}
+
+async function sendSchedAnnNow(id){
+  const r = await api(`/admin/scheduled-announcements/${id}/send-now`,{method:'POST'});
+  if(r.ok||r.ok===0){ toast(`已推播至 ${r.ok}/${r.total} 個群組 ✓`,'ok'); loadSchedAnns(); }
+  else toast(r.error||'發送失敗','err');
 }
 
 // ── Scheduled ──
