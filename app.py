@@ -44,15 +44,15 @@ HEADERS = {
 }
 
 def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image/jpeg",
-               image_url: str = "", max_tokens: int = 800) -> str:
-    """呼叫 Gemini API，回傳純文字結果"""
+               image_url: str = "", max_tokens: int = 800, _retry: int = 3) -> str:
+    """呼叫 Gemini API，回傳純文字結果。遇到 429 自動重試最多 _retry 次。"""
+    import time
     GEMINI_URL = (f"https://generativelanguage.googleapis.com/v1beta/models/"
                   f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}")
     parts = []
     if image_b64:
         parts.append({"inline_data": {"mime_type": image_media_type, "data": image_b64}})
     elif image_url:
-        # Gemini 支援直接傳圖片 URL
         img_resp = requests.get(image_url, timeout=10)
         b64 = base64.b64encode(img_resp.content).decode()
         mime = img_resp.headers.get("Content-Type", "image/jpeg").split(";")[0]
@@ -63,12 +63,29 @@ def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image
         "contents": [{"parts": parts}],
         "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.1}
     }
-    resp = requests.post(GEMINI_URL, headers={"Content-Type": "application/json"},
-                         json=body, timeout=30)
-    result = resp.json()
-    if "error" in result:
-        raise Exception(result["error"].get("message", "Gemini API 錯誤"))
-    return result["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+    for attempt in range(1, _retry + 1):
+        resp = requests.post(GEMINI_URL, headers={"Content-Type": "application/json"},
+                             json=body, timeout=30)
+        result = resp.json()
+
+        if "error" in result:
+            err = result["error"]
+            code = err.get("code", 0)
+            msg  = err.get("message", "Gemini API 錯誤")
+
+            # 429 Rate Limit：等待後重試
+            if code == 429 and attempt < _retry:
+                wait = 45 * attempt   # 第1次等45秒，第2次等90秒
+                logger.warning(f"Gemini 429 rate limit，{wait} 秒後重試（第 {attempt}/{_retry} 次）")
+                time.sleep(wait)
+                continue
+
+            raise Exception(msg)
+
+        return result["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+    raise Exception("Gemini API 重試次數已達上限，請稍後再試")
 
 
 def fetch_group_name(group_id: str) -> str:
