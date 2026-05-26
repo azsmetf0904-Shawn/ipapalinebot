@@ -132,15 +132,17 @@ def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image
     raise Exception("Gemini API 重試次數已達上限，請稍後再試")
 
 
-def fetch_group_name(group_id: str) -> str:
+def fetch_group_name(group_id: str, bot_key: str = "") -> str:
     """呼叫 LINE API 取得群組名稱，失敗回傳空字串"""
+    headers = get_bot_headers(bot_key) if bot_key and bot_key in BOTS else HEADERS
     try:
         r = requests.get(
             f"https://api.line.me/v2/bot/group/{group_id}/summary",
-            headers=HEADERS, timeout=8
+            headers=headers, timeout=8
         )
         if r.status_code == 200:
             return r.json().get("groupName", "")
+        logger.warning(f"fetch_group_name {group_id} bot={bot_key}: HTTP {r.status_code}")
     except Exception as e:
         logger.warning(f"fetch_group_name {group_id}: {e}")
     return ""
@@ -1332,12 +1334,13 @@ def sync_group_names():
     """一鍵同步所有群組名稱（呼叫 LINE API）"""
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
     conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT group_id FROM groups")
+    cur.execute("SELECT group_id, bot_key FROM groups")
     rows = cur.fetchall()
     updated = 0
     for row in rows:
-        gid = row["group_id"]
-        name = fetch_group_name(gid)
+        gid     = row["group_id"]
+        bot_key = row.get("bot_key", "") or ""
+        name = fetch_group_name(gid, bot_key)
         if name:
             cur.execute("UPDATE groups SET group_name=%s WHERE group_id=%s", (name, gid))
             updated += 1
@@ -1348,10 +1351,14 @@ def sync_group_names():
 def sync_one_group_name(gid):
     """同步單一群組名稱"""
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    name = fetch_group_name(gid)
-    if not name:
-        return jsonify({"ok": False, "error": "無法取得群組名稱（機器人可能已離開該群組）"})
     conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT bot_key FROM groups WHERE group_id=%s", (gid,))
+    row = cur.fetchone()
+    bot_key = (row["bot_key"] or "") if row else ""
+    name = fetch_group_name(gid, bot_key)
+    if not name:
+        cur.close(); conn.close()
+        return jsonify({"ok": False, "error": "無法取得群組名稱（機器人可能已離開該群組）"})
     cur.execute("UPDATE groups SET group_name=%s WHERE group_id=%s", (name, gid))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok": True, "group_name": name})
@@ -1384,7 +1391,7 @@ def handle_text(event, bot_key: str = ""):
                     ON CONFLICT (group_id) DO UPDATE SET group_name = EXCLUDED.group_name, bot_key = EXCLUDED.bot_key
                 """, (gid, isonow(), group_name, bot_key))
             elif not row["group_name"]:
-                group_name = fetch_group_name(gid)
+                group_name = fetch_group_name(gid, bot_key)
                 cur.execute("UPDATE groups SET group_name=%s WHERE group_id=%s", (group_name, gid))
             conn.commit()
         finally:
