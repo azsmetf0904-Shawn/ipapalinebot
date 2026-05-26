@@ -1478,14 +1478,20 @@ async function aiParseBroadcast(){
       document.getElementById('s-content').value = b.content||'';
       if(b.interval_value) document.getElementById('s-iv').value = b.interval_value;
       if(b.interval_unit)  document.getElementById('s-iu').value = b.interval_unit;
+      // 填入開始時間：有則用 AI 結果，無則預設今天 08:00 台灣時間
       if(b.start_time){
         // datetime-local 格式：YYYY-MM-DDTHH:MM
-        const dt = b.start_time.slice(0,16);
+        const dt = b.start_time.replace('+08:00','').slice(0,16);
         document.getElementById('s-start').value = dt;
+      } else {
+        const now = new Date().toLocaleString('sv',{timeZone:'Asia/Taipei'});
+        document.getElementById('s-start').value = now.slice(0,10)+'T08:00';
       }
       toast('AI 解析完成！請確認後儲存 ✓','ok');
       document.getElementById('sai-text').value='';
       clearSchedImg();
+      // 捲動到表單讓使用者確認
+      document.getElementById('s-title').scrollIntoView({behavior:'smooth',block:'center'});
     } else toast(r.error||'解析失敗','err');
   } catch(e){ toast('網路錯誤：'+e.message,'err'); }
   btn.disabled = false; btn.innerHTML = '<i class="ti ti-sparkles"></i> AI 解析並填入';
