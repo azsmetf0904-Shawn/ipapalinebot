@@ -65,8 +65,15 @@ def init_db():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS groups (
             group_id  TEXT PRIMARY KEY,
-            joined_at TIMESTAMPTZ NOT NULL
+            joined_at TIMESTAMPTZ NOT NULL,
+            active    BOOLEAN DEFAULT TRUE
         );
+    """)
+    # migration：若舊資料表沒有 active 欄位，自動新增
+    cur.execute("""
+        ALTER TABLE groups ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE;
+    """)
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS categories (
             id         SERIAL PRIMARY KEY,
             name       TEXT NOT NULL UNIQUE,
@@ -130,7 +137,7 @@ def unit_to_seconds(value, unit: str) -> float:
 def get_all_group_ids() -> list[str]:
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT group_id FROM groups")
+    cur.execute("SELECT group_id FROM groups WHERE active=TRUE")
     db_groups = [r["group_id"] for r in cur.fetchall()]
     cur.close(); conn.close()
     return list(set(db_groups + DEFAULT_GROUP_IDS))
@@ -308,8 +315,20 @@ def admin_info():
 @app.route("/admin/groups")
 def get_groups():
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    groups = get_all_group_ids()
-    return jsonify({"count": len(groups), "groups": groups})
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT group_id, joined_at::text, active FROM groups ORDER BY joined_at DESC")
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return jsonify({"count": len(rows), "groups": rows})
+
+@app.route("/admin/groups/<path:gid>", methods=["PUT"])
+def update_group(gid):
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    d = request.json
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("UPDATE groups SET active=%s WHERE group_id=%s", (bool(d.get("active", True)), gid))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True})
 
 @app.route("/admin/categories", methods=["GET"])
 def get_categories():
