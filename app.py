@@ -915,6 +915,27 @@ def add_broadcast_entries():
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok": True, "added": count})
 
+@app.route("/admin/broadcast-entries/<int:eid>", methods=["PUT"])
+def edit_broadcast_entry(eid):
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    d = request.json
+    send_at = d.get("send_at","").strip()
+    if not send_at: return jsonify({"ok":False,"error":"請提供發送時間"})
+    # Parse and convert to TW-aware datetime
+    try:
+        dt = datetime.fromisoformat(send_at)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=TZ)
+    except ValueError:
+        return jsonify({"ok":False,"error":"時間格式錯誤，請使用 YYYY-MM-DDTHH:MM:SS"})
+    conn = get_db(); cur = conn.cursor()
+    cur.execute(
+        "UPDATE broadcast_schedule_entries SET send_at=%s WHERE id=%s AND sent=FALSE",
+        (dt.isoformat(), eid)
+    )
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True})
+
 @app.route("/admin/broadcast-entries/<int:eid>", methods=["DELETE"])
 def delete_broadcast_entry(eid):
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
