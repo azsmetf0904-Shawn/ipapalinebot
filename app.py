@@ -814,7 +814,11 @@ def add_scheduled():
     interval_seconds = unit_to_seconds(iv, iu)
     start_time = d.get("start_time","")
     try:
-        next_run = datetime.fromisoformat(start_time).isoformat()
+        dt = datetime.fromisoformat(start_time)
+        # 若為 naive datetime（前端送台灣本地時間），補上台灣時區
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=TZ)
+        next_run = dt.isoformat()
     except Exception:
         next_run = isonow()
     conn = get_db(); cur = conn.cursor()
@@ -927,7 +931,23 @@ def trigger_reminders():
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
     check_and_send_reminders()
     check_scheduled_broadcasts()
-    return jsonify({"ok":True,"tw_date":today_tw().isoformat()})
+    check_scheduled_announcements()
+    check_broadcast_schedule_entries()
+    # 回傳目前待發的 broadcast entries 數量，方便除錯
+    conn = get_db(); cur = conn.cursor()
+    now = now_tw()
+    cur.execute("SELECT COUNT(*) as total FROM broadcast_schedule_entries WHERE sent=FALSE")
+    pending_total = cur.fetchone()["total"]
+    cur.execute("SELECT COUNT(*) as due FROM broadcast_schedule_entries WHERE sent=FALSE AND send_at <= %s", (now,))
+    pending_due = cur.fetchone()["due"]
+    cur.close(); conn.close()
+    return jsonify({
+        "ok": True,
+        "tw_time": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "tw_date": today_tw().isoformat(),
+        "pending_entries": int(pending_total),
+        "due_entries": int(pending_due),
+    })
 
 @app.route("/admin/groups/sync-names", methods=["POST"])
 def sync_group_names():
