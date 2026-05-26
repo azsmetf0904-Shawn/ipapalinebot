@@ -29,7 +29,7 @@ def isonow() -> str:
 
 # ── 環境變數 ──
 ADMIN_USER_IDS  = [x.strip() for x in os.environ.get("ADMIN_USER_IDS", "").split(",") if x.strip()]
-ADMIN_PASSWORD  = os.environ.get("ADMIN_PASSWORD", "ipapa2026")
+ADMIN_PASSWORD  = os.environ.get("ADMIN_PASSWORD", "")
 DATABASE_URL    = os.environ["DATABASE_URL"]   # Railway 自動注入
 IMGBB_API_KEY   = os.environ.get("IMGBB_API_KEY", "")
 APP_URL         = os.environ.get("APP_URL", "")
@@ -336,8 +336,10 @@ def push_text(text: str, bot_key: str = "") -> tuple[int, int, str]:
     return push_to_groups([{"type": "text", "text": text}], bot_key=bot_key)
 
 
-def reply_message(reply_token: str, text: str):
-    requests.post("https://api.line.me/v2/bot/message/reply", headers=HEADERS,
+def reply_message(reply_token: str, text: str, bot_key: str = ""):
+    """回覆訊息：指定 bot_key 可確保多 Bot 環境使用正確的 Token"""
+    headers = get_bot_headers(bot_key) if bot_key else HEADERS
+    requests.post("https://api.line.me/v2/bot/message/reply", headers=headers,
         json={"replyToken": reply_token, "messages": [{"type": "text", "text": text}]}, timeout=10)
 
 def upload_image_to_imgbb(image_data: bytes, filename="image.jpg") -> tuple[str | None, str | None]:
@@ -387,83 +389,89 @@ def check_and_send_reminders():
     logger.info(f"[Reminder] Checking reminders for {today} (TW)")
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("""
-        SELECT cr.id, c.title, c.course_date::text, c.course_time, c.location,
-               c.description, c.image_url, cat.name AS category_name
-        FROM course_reminders cr
-        JOIN courses c ON cr.course_id = c.id
-        LEFT JOIN categories cat ON c.category_id = cat.id
-        WHERE cr.remind_date = %s AND cr.sent = FALSE
-    """, (today,))
-    rows = cur.fetchall()
+    try:
+        cur.execute("""
+            SELECT cr.id, c.title, c.course_date::text, c.course_time, c.location,
+                   c.description, c.image_url, cat.name AS category_name
+            FROM course_reminders cr
+            JOIN courses c ON cr.course_id = c.id
+            LEFT JOIN categories cat ON c.category_id = cat.id
+            WHERE cr.remind_date = %s AND cr.sent = FALSE
+        """, (today,))
+        rows = cur.fetchall()
 
-    for row in rows:
-        cd = datetime.strptime(row["course_date"], "%Y-%m-%d").date()
-        days_left = (cd - today_tw().date()).days
-        timing = "【今天上課】" if days_left == 0 else f"【還有 {days_left} 天】"
-        cat = f"[{row['category_name']}] " if row["category_name"] else ""
-        text = (f"📚 課程提醒 {timing}\n━━━━━━━━━━━━\n"
-                f"{cat}📌 {row['title']}\n"
-                f"📅 {row['course_date']} {row['course_time']}")
-        if row["location"]:    text += f"\n📍 {row['location']}"
-        if row["description"]: text += f"\n📝 {row['description']}"
+        for row in rows:
+            cd = datetime.strptime(row["course_date"], "%Y-%m-%d").date()
+            days_left = (cd - today_tw().date()).days
+            timing = "【今天上課】" if days_left == 0 else f"【還有 {days_left} 天】"
+            cat = f"[{row['category_name']}] " if row["category_name"] else ""
+            text = (f"📚 課程提醒 {timing}\n━━━━━━━━━━━━\n"
+                    f"{cat}📌 {row['title']}\n"
+                    f"📅 {row['course_date']} {row['course_time']}")
+            if row["location"]:    text += f"\n📍 {row['location']}"
+            if row["description"]: text += f"\n📝 {row['description']}"
 
-        msgs = []
-        if row["image_url"]:
-            msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
-        msgs.append({"type":"text","text":text})
+            msgs = []
+            if row["image_url"]:
+                msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
+            msgs.append({"type":"text","text":text})
 
-        ok, _, _ = push_to_groups(msgs)
-        if ok > 0:
-            cur.execute("UPDATE course_reminders SET sent=TRUE WHERE id=%s", (row["id"],))
+            ok, _, _ = push_to_groups(msgs)
+            if ok > 0:
+                cur.execute("UPDATE course_reminders SET sent=TRUE WHERE id=%s", (row["id"],))
 
-    conn.commit()
-    cur.close(); conn.close()
-    logger.info(f"[Reminder] Processed {len(rows)} reminders")
+        conn.commit()
+        logger.info(f"[Reminder] Processed {len(rows)} reminders")
+    finally:
+        cur.close(); conn.close()
 
 # ── 排程廣播（每 15 分鐘檢查） ──
 def check_scheduled_broadcasts():
     now = now_tw()  # aware datetime，帶台灣時區
     conn = get_db()
     cur = conn.cursor()
-    # 用 NOW() AT TIME ZONE 比對，確保時區一致
-    cur.execute("SELECT * FROM scheduled_broadcasts WHERE active=TRUE AND next_run <= %s", (now,))
-    rows = cur.fetchall()
-    logger.info(f"[Broadcast] Checking at {now.isoformat()}, found {len(rows)} due")
+    try:
+        cur.execute("SELECT * FROM scheduled_broadcasts WHERE active=TRUE AND next_run <= %s", (now,))
+        rows = cur.fetchall()
+        logger.info(f"[Broadcast] Checking at {now.isoformat()}, found {len(rows)} due")
 
-    for row in rows:
-        msgs = []
-        if row["image_url"]:
-            msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
-        msgs.append({"type":"text","text":row["content"]})
-        ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
-        next_run = (now_tw() + timedelta(seconds=row["interval_seconds"])).isoformat()
-        cur.execute("UPDATE scheduled_broadcasts SET next_run=%s WHERE id=%s", (next_run, row["id"]))
-        logger.info(f"[Broadcast] '{row['title']}' sent {ok}/{total}, next_run={next_run}")
+        for row in rows:
+            msgs = []
+            if row["image_url"]:
+                msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
+            msgs.append({"type":"text","text":row["content"]})
+            ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
+            next_run = (now_tw() + timedelta(seconds=row["interval_seconds"])).isoformat()
+            cur.execute("UPDATE scheduled_broadcasts SET next_run=%s WHERE id=%s", (next_run, row["id"]))
+            logger.info(f"[Broadcast] '{row['title']}' sent {ok}/{total}, next_run={next_run}")
 
-    conn.commit()
-    cur.close(); conn.close()
+        conn.commit()
+    finally:
+        cur.close(); conn.close()
 
 # ── 一次性排程公告（每 5 分鐘檢查） ──
 def check_scheduled_announcements():
     now = now_tw()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM scheduled_announcements WHERE sent=FALSE AND send_at <= %s", (now,))
-    rows = cur.fetchall()
-    logger.info(f"[SchedAnn] Checking at {now.isoformat()}, found {len(rows)} due")
-    for row in rows:
-        msgs = []
-        if row["image_url"]:
-            msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
-        msgs.append({"type":"text","text":row["content"]})
-        ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
-        cur.execute(
-            "UPDATE scheduled_announcements SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
-            (now_tw().isoformat(), total, row["id"])
-        )
-        logger.info(f"[SchedAnn] id={row['id']} sent {ok}/{total}")
-    conn.commit(); cur.close(); conn.close()
+    try:
+        cur.execute("SELECT * FROM scheduled_announcements WHERE sent=FALSE AND send_at <= %s", (now,))
+        rows = cur.fetchall()
+        logger.info(f"[SchedAnn] Checking at {now.isoformat()}, found {len(rows)} due")
+        for row in rows:
+            msgs = []
+            if row["image_url"]:
+                msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
+            msgs.append({"type":"text","text":row["content"]})
+            ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
+            cur.execute(
+                "UPDATE scheduled_announcements SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
+                (now_tw().isoformat(), total, row["id"])
+            )
+            logger.info(f"[SchedAnn] id={row['id']} sent {ok}/{total}")
+        conn.commit()
+    finally:
+        cur.close(); conn.close()
 
 # 排程：固定台灣時間 08:00 + 每 15 分鐘廣播檢查 + 每 5 分鐘一次性公告
 scheduler.add_job(check_and_send_reminders, "cron", hour=8, minute=0,
@@ -477,53 +485,56 @@ scheduler.add_job(check_scheduled_announcements, "interval", minutes=5,
 def check_broadcast_schedule_entries():
     now = now_tw()
     conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT * FROM broadcast_schedule_entries WHERE sent=FALSE AND send_at <= %s", (now,))
-    rows = cur.fetchall()
-    if rows:
-        logger.info(f"[BcastEntry] {len(rows)} entries due at {now.isoformat()}")
-    for row in rows:
-        src_type = row["source_type"]
-        src_id   = row["source_id"]
-        msgs = []
-        try:
-            if src_type == "course":
-                cur2 = conn.cursor()
-                cur2.execute("""
-                    SELECT c.*, cat.name AS category_name FROM courses c
-                    LEFT JOIN categories cat ON c.category_id=cat.id WHERE c.id=%s
-                """, (src_id,))
-                c = cur2.fetchone(); cur2.close()
-                if c:
-                    cd = datetime.strptime(str(c["course_date"]), "%Y-%m-%d").date()
-                    days_left = (cd - today_tw()).days
-                    timing = "【今天上課】" if days_left==0 else f"【還有 {days_left} 天】" if days_left>0 else "【已結束】"
-                    cat = f"[{c['category_name']}] " if c["category_name"] else ""
-                    text = (f"📚 課程提醒 {timing}\n━━━━━━━━━━━━\n"
-                            f"{cat}📌 {c['title']}\n"
-                            f"📅 {c['course_date']} {c['course_time']}")
-                    if c["location"]:    text += f"\n📍 {c['location']}"
-                    if c["description"]: text += f"\n📝 {c['description']}"
-                    if c["image_url"]:
-                        msgs.append({"type":"image","originalContentUrl":c["image_url"],"previewImageUrl":c["image_url"]})
-                    msgs.append({"type":"text","text":text})
-            elif src_type == "broadcast":
-                cur2 = conn.cursor()
-                cur2.execute("SELECT * FROM scheduled_broadcasts WHERE id=%s", (src_id,))
-                b = cur2.fetchone(); cur2.close()
-                if b:
-                    if b["image_url"]:
-                        msgs.append({"type":"image","originalContentUrl":b["image_url"],"previewImageUrl":b["image_url"]})
-                    msgs.append({"type":"text","text":b["content"]})
-        except Exception as e:
-            logger.error(f"[BcastEntry] build msg error: {e}")
-        if msgs:
-            ok, total, _err = push_to_groups(msgs)
-            cur.execute(
-                "UPDATE broadcast_schedule_entries SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
-                (now_tw().isoformat(), total, row["id"])
-            )
-            logger.info(f"[BcastEntry] id={row['id']} {src_type}#{src_id} sent {ok}/{total}")
-    conn.commit(); cur.close(); conn.close()
+    try:
+        cur.execute("SELECT * FROM broadcast_schedule_entries WHERE sent=FALSE AND send_at <= %s", (now,))
+        rows = cur.fetchall()
+        if rows:
+            logger.info(f"[BcastEntry] {len(rows)} entries due at {now.isoformat()}")
+        for row in rows:
+            src_type = row["source_type"]
+            src_id   = row["source_id"]
+            msgs = []
+            try:
+                if src_type == "course":
+                    cur2 = conn.cursor()
+                    cur2.execute("""
+                        SELECT c.*, cat.name AS category_name FROM courses c
+                        LEFT JOIN categories cat ON c.category_id=cat.id WHERE c.id=%s
+                    """, (src_id,))
+                    c = cur2.fetchone(); cur2.close()
+                    if c:
+                        cd = datetime.strptime(str(c["course_date"]), "%Y-%m-%d").date()
+                        days_left = (cd - today_tw()).days
+                        timing = "【今天上課】" if days_left==0 else f"【還有 {days_left} 天】" if days_left>0 else "【已結束】"
+                        cat = f"[{c['category_name']}] " if c["category_name"] else ""
+                        text = (f"📚 課程提醒 {timing}\n━━━━━━━━━━━━\n"
+                                f"{cat}📌 {c['title']}\n"
+                                f"📅 {c['course_date']} {c['course_time']}")
+                        if c["location"]:    text += f"\n📍 {c['location']}"
+                        if c["description"]: text += f"\n📝 {c['description']}"
+                        if c["image_url"]:
+                            msgs.append({"type":"image","originalContentUrl":c["image_url"],"previewImageUrl":c["image_url"]})
+                        msgs.append({"type":"text","text":text})
+                elif src_type == "broadcast":
+                    cur2 = conn.cursor()
+                    cur2.execute("SELECT * FROM scheduled_broadcasts WHERE id=%s", (src_id,))
+                    b = cur2.fetchone(); cur2.close()
+                    if b:
+                        if b["image_url"]:
+                            msgs.append({"type":"image","originalContentUrl":b["image_url"],"previewImageUrl":b["image_url"]})
+                        msgs.append({"type":"text","text":b["content"]})
+            except Exception as e:
+                logger.error(f"[BcastEntry] build msg error: {e}")
+            if msgs:
+                ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
+                cur.execute(
+                    "UPDATE broadcast_schedule_entries SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
+                    (now_tw().isoformat(), total, row["id"])
+                )
+                logger.info(f"[BcastEntry] id={row['id']} {src_type}#{src_id} sent {ok}/{total}")
+        conn.commit()
+    finally:
+        cur.close(); conn.close()
 
 scheduler.add_job(check_broadcast_schedule_entries, "interval", minutes=5,
                   id="bcast_entries", replace_existing=True)
@@ -534,7 +545,8 @@ def check_admin(req) -> bool:
 # ── Static ──
 @app.route("/admin")
 def admin_page():
-    return send_from_directory("static", "admin.html")
+    # admin.html 放在專案根目錄（與 app.py 同層）
+    return send_from_directory(".", "admin.html")
 
 @app.route("/")
 def index():
@@ -552,6 +564,7 @@ def health():
 
 @app.route("/init-db")
 def init_db_route():
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
     init_db()
     return "DB initialized OK"
 
@@ -941,7 +954,7 @@ def send_broadcast_entry_now(eid):
             if b["image_url"]: msgs.append({"type":"image","originalContentUrl":b["image_url"],"previewImageUrl":b["image_url"]})
             msgs.append({"type":"text","text":b["content"]})
     if not msgs: cur.close(); conn.close(); return jsonify({"ok":False,"error":"無法組建訊息"})
-    ok, total, _err = push_to_groups(msgs)
+    ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
     cur.execute("UPDATE broadcast_schedule_entries SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
                 (isonow(), total, eid))
     conn.commit(); cur.close(); conn.close()
@@ -1308,35 +1321,45 @@ def sync_one_group_name(gid):
     return jsonify({"ok": True, "group_name": name})
 
 # ── Webhook ──
-def handle_text(event):
+def handle_text(event, bot_key: str = ""):
     user_id = event["source"].get("userId","")
     reply_token = event["replyToken"]
     text = event["message"]["text"].strip()
 
     if event["source"]["type"] == "group":
         gid = event["source"]["groupId"]
-        conn = get_db(); cur = conn.cursor()
-        # 若群組已存在且有名稱則不重複呼叫 LINE API
-        cur.execute("SELECT group_name FROM groups WHERE group_id=%s", (gid,))
-        row = cur.fetchone()
-        if row is None:
-            group_name = fetch_group_name(gid)
-            cur.execute("""
-                INSERT INTO groups (group_id, joined_at, group_name)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (group_id) DO UPDATE SET group_name = EXCLUDED.group_name
-            """, (gid, isonow(), group_name))
-        elif not row["group_name"]:
-            group_name = fetch_group_name(gid)
-            cur.execute("UPDATE groups SET group_name=%s WHERE group_id=%s", (group_name, gid))
-        conn.commit(); cur.close(); conn.close()
+        conn = get_db()
+        cur = conn.cursor()
+        try:
+            # 若群組已存在且有名稱則不重複呼叫 LINE API
+            cur.execute("SELECT group_name FROM groups WHERE group_id=%s", (gid,))
+            row = cur.fetchone()
+            if row is None:
+                headers = get_bot_headers(bot_key) if bot_key else HEADERS
+                try:
+                    r = requests.get(f"https://api.line.me/v2/bot/group/{gid}/summary",
+                                     headers=headers, timeout=8)
+                    group_name = r.json().get("groupName","") if r.status_code==200 else ""
+                except Exception:
+                    group_name = ""
+                cur.execute("""
+                    INSERT INTO groups (group_id, joined_at, group_name, bot_key)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (group_id) DO UPDATE SET group_name = EXCLUDED.group_name, bot_key = EXCLUDED.bot_key
+                """, (gid, isonow(), group_name, bot_key))
+            elif not row["group_name"]:
+                group_name = fetch_group_name(gid)
+                cur.execute("UPDATE groups SET group_name=%s WHERE group_id=%s", (group_name, gid))
+            conn.commit()
+        finally:
+            cur.close(); conn.close()
 
     if user_id not in ADMIN_USER_IDS:
         return
 
     if text.startswith("/公告 "):
-        ok, total, _err = push_text(f"📢 {text[4:].strip()}")
-        reply_message(reply_token, f"✅ 已發送到 {ok}/{total} 個群組")
+        ok, total, _err = push_text(f"📢 {text[4:].strip()}", bot_key=bot_key)
+        reply_message(reply_token, f"✅ 已發送到 {ok}/{total} 個群組", bot_key=bot_key)
 
     elif text.startswith("/新增課程 ") or text.startswith("/加課 "):
         desc = text.split(" ",1)[1].strip()
@@ -1351,33 +1374,40 @@ def handle_text(event):
                 if ai_text.startswith("json"): ai_text = ai_text[4:]
             c = json.loads(ai_text.strip())
             conn = get_db(); cur = conn.cursor()
-            cur.execute("""
-                INSERT INTO courses
-                  (title,course_date,course_time,location,description,image_url,
-                   remind_value,remind_unit,remind_interval_value,remind_interval_unit,created_at)
-                VALUES (%s,%s,%s,%s,%s,'',30,'days',7,'days',%s) RETURNING id
-            """, (c["title"],c["course_date"],c.get("course_time","09:00"),
-                  c.get("location",""),c.get("description",""),isonow()))
-            cid = cur.fetchone()["id"]
-            conn.commit(); cur.close(); conn.close()
+            try:
+                cur.execute("""
+                    INSERT INTO courses
+                      (title,course_date,course_time,location,description,image_url,
+                       remind_value,remind_unit,remind_interval_value,remind_interval_unit,created_at)
+                    VALUES (%s,%s,%s,%s,%s,'',30,'days',7,'days',%s) RETURNING id
+                """, (c["title"],c["course_date"],c.get("course_time","09:00"),
+                      c.get("location",""),c.get("description",""),isonow()))
+                cid = cur.fetchone()["id"]
+                conn.commit()
+            finally:
+                cur.close(); conn.close()
             dates = generate_reminders(cid, c["course_date"], 30, "days", 7, "days")
             reply_message(reply_token,
                 f"✅ 課程已新增！\n📌 {c['title']}\n📅 {c['course_date']} {c.get('course_time','09:00')}\n"
-                f"📍 {c.get('location','未指定')}\n🔔 {len(dates)} 個提醒")
+                f"📍 {c.get('location','未指定')}\n🔔 {len(dates)} 個提醒",
+                bot_key=bot_key)
         except Exception as e:
-            reply_message(reply_token, f"❌ AI 解析失敗\n{str(e)[:80]}")
+            reply_message(reply_token, f"❌ AI 解析失敗\n{str(e)[:80]}", bot_key=bot_key)
 
     elif text == "/課程清單":
         conn = get_db(); cur = conn.cursor()
-        cur.execute("SELECT title, course_date::text FROM courses ORDER BY course_date ASC LIMIT 10")
-        rows = cur.fetchall(); cur.close(); conn.close()
+        try:
+            cur.execute("SELECT title, course_date::text FROM courses ORDER BY course_date ASC LIMIT 10")
+            rows = cur.fetchall()
+        finally:
+            cur.close(); conn.close()
         if not rows:
-            reply_message(reply_token, "目前沒有排程課程")
+            reply_message(reply_token, "目前沒有排程課程", bot_key=bot_key)
         else:
-            reply_message(reply_token, "課程清單：\n" + "\n".join(f"📅 {r['course_date']} {r['title']}" for r in rows))
+            reply_message(reply_token, "課程清單：\n" + "\n".join(f"📅 {r['course_date']} {r['title']}" for r in rows), bot_key=bot_key)
 
     elif text == "/群組清單":
-        reply_message(reply_token, f"已連接 {len(get_all_group_ids())} 個群組")
+        reply_message(reply_token, f"已連接 {len(get_all_group_ids(bot_key))} 個群組", bot_key=bot_key)
 
     elif text in ("/說明", "/help"):
         url = APP_URL or "（請設定 APP_URL 環境變數）"
@@ -1387,7 +1417,8 @@ def handle_text(event):
             f"/新增課程 [描述] — AI 新增課程\n"
             f"/課程清單 — 查看課程\n"
             f"/群組清單 — 查看群組\n\n"
-            f"🌐 管理後台：\n{url}/admin")
+            f"🌐 管理後台：\n{url}/admin",
+            bot_key=bot_key)
 
 def _get_chat_id_and_name(event, headers) -> tuple[str, str]:
     """從 join/leave event 取得 chat id 與名稱，支援 group 和 room（多人聊天室）"""
@@ -1446,7 +1477,7 @@ def webhook():
         t = event.get("type")
         try:
             if t == "message" and event["message"]["type"] == "text":
-                handle_text(event)
+                handle_text(event, bot_key=bot_key)
             elif t == "join":
                 handle_join(event, bot_key=bot_key)
             elif t == "leave":
@@ -1457,4 +1488,3 @@ def webhook():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
-    
