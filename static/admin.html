@@ -116,7 +116,12 @@ textarea{resize:vertical;min-height:72px}
 /* Remind grid */
 .remind-grid{display:grid;grid-template-columns:80px 1fr 80px 1fr;gap:8px;align-items:end}
 
-/* Toast */
+/* Sortable headers */
+.sortable-th{cursor:pointer;user-select:none;white-space:nowrap}
+.sortable-th:hover{color:#1A1A1A;background:#F5F5F0}
+.sort-icon{font-size:11px;opacity:.4;vertical-align:-1px}
+.sortable-th.sort-asc .sort-icon,.sortable-th.sort-desc .sort-icon{opacity:1;color:#06A847}
+
 #toast{position:fixed;bottom:24px;right:24px;padding:12px 18px;border-radius:10px;font-size:13px;color:#fff;background:#1A1A1A;opacity:0;transform:translateY(8px);transition:all .25s;z-index:1000;pointer-events:none;max-width:300px}
 #toast.show{opacity:1;transform:translateY(0)}
 #toast.ok{background:#06A847}
@@ -222,9 +227,38 @@ textarea{resize:vertical;min-height:72px}
           </div>
         </div>
         <div class="card">
-          <div class="card-head"><span class="card-title"><i class="ti ti-list"></i> 課程清單</span></div>
-          <table class="tbl"><thead><tr><th>課程</th><th>日期 / 時間</th><th>地點</th><th>分類</th><th>提醒進度</th><th>操作</th></tr></thead>
-          <tbody id="course-tbody"><tr><td colspan="6" style="text-align:center;color:#999;padding:20px">載入中...</td></tr></tbody></table>
+          <div class="card-head"><span class="card-title"><i class="ti ti-list"></i> 課程清單</span>
+            <span id="course-count-hint" style="font-size:12px;color:#999"></span>
+          </div>
+          <!-- 篩選列 -->
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
+            <input id="cf-keyword" placeholder="🔍 搜尋課程名稱…" style="width:160px;padding:6px 10px;font-size:12px" oninput="renderCourses()">
+            <select id="cf-cat" style="font-size:12px;padding:6px 8px" onchange="renderCourses()">
+              <option value="">全部分類</option>
+            </select>
+            <input id="cf-loc" placeholder="📍 地點篩選…" style="width:120px;padding:6px 10px;font-size:12px" oninput="renderCourses()">
+            <select id="cf-period" style="font-size:12px;padding:6px 8px" onchange="renderCourses()">
+              <option value="">全部時間</option>
+              <option value="upcoming">未來課程</option>
+              <option value="past">已過期</option>
+              <option value="thismonth">本月</option>
+              <option value="nextmonth">下個月</option>
+            </select>
+            <button class="btn btn-sm" onclick="clearCourseFilters()" style="font-size:12px;color:#999"><i class="ti ti-x"></i> 清除篩選</button>
+          </div>
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th onclick="sortCourses('title')" class="sortable-th" id="cth-title">課程 <i class="ti ti-selector sort-icon"></i></th>
+                <th onclick="sortCourses('course_date')" class="sortable-th" id="cth-course_date">日期 / 時間 <i class="ti ti-selector sort-icon"></i></th>
+                <th onclick="sortCourses('location')" class="sortable-th" id="cth-location">地點 <i class="ti ti-selector sort-icon"></i></th>
+                <th onclick="sortCourses('category_name')" class="sortable-th" id="cth-category_name">分類 <i class="ti ti-selector sort-icon"></i></th>
+                <th>提醒進度</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="course-tbody"><tr><td colspan="6" style="text-align:center;color:#999;padding:20px">載入中...</td></tr></tbody>
+          </table>
         </div>
       </div>
 
@@ -265,7 +299,23 @@ textarea{resize:vertical;min-height:72px}
           </div>
         </div>
         <div class="card">
-          <div class="card-head"><span class="card-title"><i class="ti ti-list"></i> 排程清單</span></div>
+          <div class="card-head"><span class="card-title"><i class="ti ti-list"></i> 排程清單</span>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span id="sched-count-hint" style="font-size:12px;color:#999"></span>
+              <select id="sf-sort" style="font-size:12px;padding:5px 8px" onchange="renderScheds()">
+                <option value="next_run">依下次發送時間</option>
+                <option value="title">依標題</option>
+                <option value="interval_seconds">依發送間隔</option>
+                <option value="active">依啟用狀態</option>
+              </select>
+              <button class="btn btn-sm" id="sf-dir-btn" onclick="toggleSchedDir()" title="切換排序方向" style="padding:5px 8px"><i class="ti ti-arrows-sort"></i> <span id="sf-dir-label">升冪</span></button>
+              <select id="sf-status" style="font-size:12px;padding:5px 8px" onchange="renderScheds()">
+                <option value="">全部</option>
+                <option value="active">啟用中</option>
+                <option value="inactive">已停用</option>
+              </select>
+            </div>
+          </div>
           <div id="sched-list"><div style="text-align:center;color:#999;padding:20px">載入中...</div></div>
         </div>
       </div>
@@ -554,17 +604,98 @@ async function loadDashboard(){
 }
 
 // ── Courses ──
+let _courseSort = {key:'course_date', dir:1}; // dir: 1=升冪 -1=降冪
+
 async function loadCourses(){
   const [ci, cats] = await Promise.all([api('/admin/courses'), api('/admin/categories')]);
   _courses = ci.courses||[];
   const categories = cats.categories||[];
   _catMap = {}; categories.forEach(c=>{ _catMap[c.id]=c; });
 
+  // 表單分類下拉
   const sel = document.getElementById('c-cat');
+  const curVal = sel.value;
   sel.innerHTML = '<option value="">— 選擇分類 —</option>' + categories.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  sel.value = curVal;
+
+  // 篩選分類下拉同步
+  const cfCat = document.getElementById('cf-cat');
+  const cfCurVal = cfCat.value;
+  cfCat.innerHTML = '<option value="">全部分類</option>' + categories.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  cfCat.value = cfCurVal;
+
+  renderCourses();
+}
+
+function clearCourseFilters(){
+  document.getElementById('cf-keyword').value = '';
+  document.getElementById('cf-cat').value     = '';
+  document.getElementById('cf-loc').value     = '';
+  document.getElementById('cf-period').value  = '';
+  renderCourses();
+}
+
+function sortCourses(key){
+  if(_courseSort.key === key){
+    _courseSort.dir *= -1;
+  } else {
+    _courseSort.key = key;
+    _courseSort.dir = 1;
+  }
+  renderCourses();
+}
+
+function renderCourses(){
+  // 讀取篩選條件
+  const keyword = (document.getElementById('cf-keyword')?.value||'').toLowerCase();
+  const catId   = document.getElementById('cf-cat')?.value||'';
+  const loc     = (document.getElementById('cf-loc')?.value||'').toLowerCase();
+  const period  = document.getElementById('cf-period')?.value||'';
+  const todayStr = today();
+  const twNow    = new Date();
+  const thisYM   = `${twNow.getFullYear()}-${String(twNow.getMonth()+1).padStart(2,'0')}`;
+  const nextM    = new Date(twNow.getFullYear(), twNow.getMonth()+1, 1);
+  const nextYM   = `${nextM.getFullYear()}-${String(nextM.getMonth()+1).padStart(2,'0')}`;
+
+  let list = _courses.filter(c=>{
+    if(keyword && !c.title.toLowerCase().includes(keyword)) return false;
+    if(catId   && String(c.category_id) !== catId) return false;
+    if(loc     && !(c.location||'').toLowerCase().includes(loc)) return false;
+    if(period === 'upcoming'  && c.course_date < todayStr) return false;
+    if(period === 'past'      && c.course_date >= todayStr) return false;
+    if(period === 'thismonth' && !c.course_date.startsWith(thisYM)) return false;
+    if(period === 'nextmonth' && !c.course_date.startsWith(nextYM)) return false;
+    return true;
+  });
+
+  // 排序
+  const {key, dir} = _courseSort;
+  list = [...list].sort((a,b)=>{
+    let av = a[key]||'', bv = b[key]||'';
+    if(key === 'course_date') { av = a.course_date+' '+(a.course_time||''); bv = b.course_date+' '+(b.course_time||''); }
+    return av < bv ? -dir : av > bv ? dir : 0;
+  });
+
+  // 更新表頭 icon
+  ['title','course_date','location','category_name'].forEach(k=>{
+    const th = document.getElementById('cth-'+k);
+    if(!th) return;
+    th.classList.remove('sort-asc','sort-desc');
+    const icon = th.querySelector('.sort-icon');
+    if(_courseSort.key === k){
+      th.classList.add(_courseSort.dir===1 ? 'sort-asc' : 'sort-desc');
+      icon.className = `ti ${_courseSort.dir===1?'ti-sort-ascending':'ti-sort-descending'} sort-icon`;
+    } else {
+      icon.className = 'ti ti-selector sort-icon';
+    }
+  });
+
+  // 計數
+  const hint = document.getElementById('course-count-hint');
+  if(hint) hint.textContent = list.length === _courses.length ? `共 ${_courses.length} 筆` : `顯示 ${list.length} / ${_courses.length} 筆`;
 
   const tbody = document.getElementById('course-tbody');
-  tbody.innerHTML = _courses.length ? _courses.map(c=>`
+  tbody.innerHTML = list.length ? list.map(c=>`
     <tr>
       <td><strong>${esc(c.title)}</strong></td>
       <td style="white-space:nowrap">${c.course_date} ${c.course_time}</td>
@@ -576,7 +707,7 @@ async function loadCourses(){
         <button class="btn btn-sm" onclick="editCourse(${c.id})" title="編輯"><i class="ti ti-edit"></i></button>
         <button class="btn btn-sm btn-danger" onclick="deleteCourse(${c.id})" title="刪除"><i class="ti ti-trash"></i></button>
       </div></td>
-    </tr>`).join('') : '<tr><td colspan="6" style="text-align:center;color:#999;padding:24px">尚無課程，請使用上方表單新增</td></tr>';
+    </tr>`).join('') : `<tr><td colspan="6" style="text-align:center;color:#999;padding:24px">${_courses.length?'沒有符合條件的課程':'尚無課程，請使用上方表單新增'}</td></tr>`;
 }
 
 function editCourse(id){
@@ -687,15 +818,43 @@ async function sendAnn(){
 }
 
 // ── Scheduled ──
+let _schedSort = {dir: 1};
+
 async function loadScheduled(){
   const r = await api('/admin/scheduled');
   _scheds = r.schedules||[];
   renderScheds();
 }
 
+function toggleSchedDir(){
+  _schedSort.dir *= -1;
+  document.getElementById('sf-dir-label').textContent = _schedSort.dir===1 ? '升冪' : '降冪';
+  renderScheds();
+}
+
 function renderScheds(){
+  const sortKey    = document.getElementById('sf-sort')?.value || 'next_run';
+  const statusFilt = document.getElementById('sf-status')?.value || '';
+  const dir        = _schedSort.dir;
+
+  let list = _scheds.filter(s=>{
+    if(statusFilt === 'active'   && !s.active) return false;
+    if(statusFilt === 'inactive' &&  s.active) return false;
+    return true;
+  });
+
+  list = [...list].sort((a,b)=>{
+    let av = a[sortKey], bv = b[sortKey];
+    if(typeof av === 'boolean') { av = av?1:0; bv = bv?1:0; }
+    av = av??''; bv = bv??'';
+    return av < bv ? -dir : av > bv ? dir : 0;
+  });
+
+  const hint = document.getElementById('sched-count-hint');
+  if(hint) hint.textContent = list.length === _scheds.length ? `共 ${_scheds.length} 筆` : `顯示 ${list.length} / ${_scheds.length} 筆`;
+
   const div = document.getElementById('sched-list');
-  div.innerHTML = _scheds.length ? _scheds.map(s=>`
+  div.innerHTML = list.length ? list.map(s=>`
     <div class="sch-card ${s.active?'':'off'}" id="sch-${s.id}">
       <div class="sch-dot ${s.active?'':'off'}" id="sch-dot-${s.id}"></div>
       <div class="sch-info">
@@ -707,7 +866,7 @@ function renderScheds(){
         <button class="btn btn-sm" onclick="sendSchedNow(${s.id})"><i class="ti ti-send"></i></button>
         <button class="btn btn-sm btn-danger" onclick="deleteSched(${s.id})"><i class="ti ti-trash"></i></button>
       </div>
-    </div>`).join('') : '<div style="text-align:center;color:#999;padding:24px">尚無排程廣播</div>';
+    </div>`).join('') : `<div style="text-align:center;color:#999;padding:24px">${_scheds.length?'沒有符合條件的排程':'尚無排程廣播'}</div>`;
 }
 
 async function addScheduled(){
