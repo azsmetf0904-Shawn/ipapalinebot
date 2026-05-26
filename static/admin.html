@@ -258,9 +258,17 @@ textarea{resize:vertical;min-height:72px}
         <div class="ai-box">
           <div class="ai-icon"><i class="ti ti-sparkles"></i></div>
           <div class="ai-content">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px">
               <div class="ai-label" style="margin-bottom:0">✨ AI 智慧建立課程</div>
-              <span style="font-size:11px;color:#5A9A70">上傳圖片或輸入文字，AI 自動解析並填入課程</span>
+              <div style="display:flex;gap:0;border:1px solid #B2DFC4;border-radius:8px;overflow:hidden;font-size:12px">
+                <button id="ai-mode-single" onclick="setAiMode('single')"
+                  style="padding:4px 12px;border:none;background:#06C755;color:#fff;cursor:pointer;font-family:inherit;font-size:12px">單一活動</button>
+                <button id="ai-mode-multi" onclick="setAiMode('multi')"
+                  style="padding:4px 12px;border:none;background:#fff;color:#06A847;cursor:pointer;font-family:inherit;font-size:12px">全部新增</button>
+              </div>
+            </div>
+            <div id="ai-mode-hint" style="font-size:11px;color:#5A9A70;margin-bottom:8px">
+              解析並填入表單，確認後手動儲存
             </div>
             <div style="display:flex;gap:8px;margin-bottom:8px">
               <textarea id="ai-text" placeholder="文字描述（可與圖片並用）&#10;例：下週五下午三點在台北辦公室舉辦新人培訓" style="flex:1;min-height:60px"></textarea>
@@ -276,12 +284,11 @@ textarea{resize:vertical;min-height:72px}
                 <button onclick="clearCourseImg()" style="border:none;background:none;cursor:pointer;color:#C62828;font-size:16px;line-height:1">×</button>
               </div>
               <div style="flex:1;display:flex;justify-content:flex-end">
-                <button class="btn btn-primary btn-sm" onclick="aiParse()" id="ai-parse-btn" style="white-space:nowrap"><i class="ti ti-sparkles"></i> AI 解析並填入</button>
+                <button class="btn btn-primary btn-sm" onclick="aiParseDispatch()" id="ai-parse-btn" style="white-space:nowrap"><i class="ti ti-sparkles"></i> AI 解析並填入</button>
               </div>
             </div>
-            <div id="ai-course-info" style="font-size:11px;color:#5A9A70;margin-top:6px;display:none">
-              <i class="ti ti-info-circle" style="vertical-align:-2px"></i> AI 會自動識別：活動名稱、日期時間、地點、提前天數、提醒間隔、完整說明內容
-            </div>
+            <!-- 全部新增結果 -->
+            <div id="ai-multi-result" style="display:none;margin-top:10px;background:#fff;border:1px solid #B2DFC4;border-radius:8px;padding:10px;font-size:12px"></div>
           </div>
         </div>
         <div class="card">
@@ -1277,7 +1284,80 @@ async function sendCourseNow(id){
   else toast(r.error||'發送失敗','err');
 }
 
-// ── apiMultipart：帶 X-Admin-Pass header 的 multipart 請求 ──
+// ── AI Mode toggle ──
+let _aiMode = 'single';
+function setAiMode(mode){
+  _aiMode = mode;
+  const single = document.getElementById('ai-mode-single');
+  const multi  = document.getElementById('ai-mode-multi');
+  const hint   = document.getElementById('ai-mode-hint');
+  const btn    = document.getElementById('ai-parse-btn');
+  if(mode === 'single'){
+    single.style.background='#06C755'; single.style.color='#fff';
+    multi.style.background='#fff';     multi.style.color='#06A847';
+    hint.textContent = '解析並填入表單，確認後手動儲存';
+    btn.innerHTML = '<i class="ti ti-sparkles"></i> AI 解析並填入';
+  } else {
+    multi.style.background='#06C755'; multi.style.color='#fff';
+    single.style.background='#fff';   single.style.color='#06A847';
+    hint.textContent = '解析圖片中所有活動，直接全部新增（不需逐一確認）';
+    btn.innerHTML = '<i class="ti ti-sparkles"></i> AI 全部新增';
+  }
+  document.getElementById('ai-multi-result').style.display='none';
+}
+
+function aiParseDispatch(){
+  if(_aiMode === 'multi') aiParseMulti();
+  else aiParse();
+}
+
+// ── AI Parse Multi (批次新增所有活動) ──
+async function aiParseMulti(){
+  const text = document.getElementById('ai-text').value.trim();
+  const fileInput = document.getElementById('ai-img-file');
+  const file = fileInput.files[0];
+  if(!text && !file){ toast('請輸入描述或上傳圖片','err'); return; }
+  const btn = document.getElementById('ai-parse-btn');
+  const resultDiv = document.getElementById('ai-multi-result');
+  btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader"></i> AI 解析中...';
+  resultDiv.style.display='none';
+  toast('AI 解析中，請稍候...');
+  try {
+    let r;
+    if(file){
+      const fd = new FormData();
+      if(text) fd.append('text', text);
+      fd.append('image', file);
+      r = await apiMultipart('/admin/ai-parse-multi', fd);
+    } else {
+      r = await api('/admin/ai-parse-multi',{method:'POST',body:JSON.stringify({text})});
+    }
+    if(r.ok){
+      const saved = r.saved || [];
+      const errors = r.errors || [];
+      toast(`✅ 已新增 ${r.saved_count}／${r.total} 個活動`, 'ok');
+      // 顯示結果清單
+      let html = `<div style="font-weight:600;color:#0A7A3E;margin-bottom:8px">✅ 成功新增 ${r.saved_count} 個活動</div>`;
+      saved.forEach(c => {
+        html += `<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #E9FBF0">
+          <i class="ti ti-check" style="color:#06C755;font-size:13px;flex-shrink:0"></i>
+          <span style="font-weight:500">${esc(c.title)}</span>
+          <span style="color:#999;margin-left:auto;white-space:nowrap">${c.course_date} · ${c.remind_count} 個提醒</span>
+        </div>`;
+      });
+      if(errors.length){
+        html += `<div style="color:#C62828;margin-top:8px;font-weight:500">⚠️ ${errors.length} 個略過：</div>`;
+        errors.forEach(e => { html += `<div style="color:#999;font-size:11px;padding:2px 0">${esc(e)}</div>`; });
+      }
+      resultDiv.innerHTML = html;
+      resultDiv.style.display = 'block';
+      document.getElementById('ai-text').value='';
+      clearCourseImg();
+      loadCourses();
+    } else toast(r.error||'解析失敗','err');
+  } catch(e){ toast('網路錯誤：'+e.message,'err'); }
+  btn.disabled = false; btn.innerHTML = '<i class="ti ti-sparkles"></i> AI 全部新增';
+}
 async function apiMultipart(path, formData){
   const pass = await ensureAuth();
   if(!pass) return {};
