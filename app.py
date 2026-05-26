@@ -198,8 +198,10 @@ def init_db():
             remind_unit           TEXT DEFAULT 'days',
             remind_interval_value INTEGER DEFAULT 7,
             remind_interval_unit  TEXT DEFAULT 'days',
+            bot_key               TEXT DEFAULT '',
             created_at            TIMESTAMPTZ NOT NULL
         );
+        ALTER TABLE courses ADD COLUMN IF NOT EXISTS bot_key TEXT DEFAULT '';
         CREATE TABLE IF NOT EXISTS course_reminders (
             id          SERIAL PRIMARY KEY,
             course_id   INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
@@ -213,11 +215,13 @@ def init_db():
             image_url        TEXT DEFAULT '',
             interval_seconds REAL NOT NULL DEFAULT 86400,
             next_run         TIMESTAMPTZ NOT NULL,
+            end_time         TIMESTAMPTZ DEFAULT NULL,
             active           BOOLEAN DEFAULT TRUE,
             bot_key          TEXT DEFAULT '',
             created_at       TIMESTAMPTZ NOT NULL
         );
         ALTER TABLE scheduled_broadcasts ADD COLUMN IF NOT EXISTS bot_key TEXT DEFAULT '';
+        ALTER TABLE scheduled_broadcasts ADD COLUMN IF NOT EXISTS end_time TIMESTAMPTZ DEFAULT NULL;
         CREATE TABLE IF NOT EXISTS announcements (
             id          SERIAL PRIMARY KEY,
             content     TEXT NOT NULL,
@@ -438,14 +442,43 @@ def check_scheduled_broadcasts():
         logger.info(f"[Broadcast] Checking at {now.isoformat()}, found {len(rows)} due")
 
         for row in rows:
+            # 若設定了結束時間且已超過，自動停用
+            if row.get("end_time"):
+                try:
+                    end_dt = datetime.fromisoformat(str(row["end_time"]))
+                    if end_dt.tzinfo is None:
+                        end_dt = end_dt.replace(tzinfo=TZ)
+                    if now >= end_dt:
+                        cur.execute("UPDATE scheduled_broadcasts SET active=FALSE WHERE id=%s", (row["id"],))
+                        logger.info(f"[Broadcast] '{row['title']}' end_time reached, deactivated")
+                        continue
+                except Exception as e:
+                    logger.warning(f"[Broadcast] end_time parse error: {e}")
+
             msgs = []
             if row["image_url"]:
                 msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
             msgs.append({"type":"text","text":row["content"]})
             ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
-            next_run = (now_tw() + timedelta(seconds=row["interval_seconds"])).isoformat()
-            cur.execute("UPDATE scheduled_broadcasts SET next_run=%s WHERE id=%s", (next_run, row["id"]))
-            logger.info(f"[Broadcast] '{row['title']}' sent {ok}/{total}, next_run={next_run}")
+            next_run = now_tw() + timedelta(seconds=row["interval_seconds"])
+
+            # 若下一次發送已超過結束時間，發送後直接停用
+            if row.get("end_time"):
+                try:
+                    end_dt = datetime.fromisoformat(str(row["end_time"]))
+                    if end_dt.tzinfo is None:
+                        end_dt = end_dt.replace(tzinfo=TZ)
+                    if next_run >= end_dt:
+                        cur.execute("UPDATE scheduled_broadcasts SET next_run=%s, active=FALSE WHERE id=%s",
+                                    (next_run.isoformat(), row["id"]))
+                        logger.info(f"[Broadcast] '{row['title']}' last send done, deactivated")
+                        continue
+                except Exception:
+                    pass
+
+            cur.execute("UPDATE scheduled_broadcasts SET next_run=%s WHERE id=%s",
+                        (next_run.isoformat(), row["id"]))
+            logger.info(f"[Broadcast] '{row['title']}' sent {ok}/{total}, next_run={next_run.isoformat()}")
 
         conn.commit()
     finally:
@@ -704,15 +737,16 @@ def add_course():
     ru = d.get("remind_unit", "days")
     iv = int(d.get("remind_interval_value", 7))
     iu = d.get("remind_interval_unit", "days")
+    bot_key = d.get("bot_key", "").strip()
     conn = get_db(); cur = conn.cursor()
     cur.execute("""
         INSERT INTO courses
           (category_id,title,course_date,course_time,location,description,image_url,
-           remind_value,remind_unit,remind_interval_value,remind_interval_unit,created_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+           remind_value,remind_unit,remind_interval_value,remind_interval_unit,bot_key,created_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
     """, (d.get("category_id"), title, course_date, d.get("course_time","09:00"),
           d.get("location",""), d.get("description",""), d.get("image_url",""),
-          rv, ru, iv, iu, isonow()))
+          rv, ru, iv, iu, bot_key, isonow()))
     cid = cur.fetchone()["id"]
     conn.commit(); cur.close(); conn.close()
     dates = generate_reminders(cid, course_date, rv, ru, iv, iu)
@@ -729,14 +763,15 @@ def edit_course(cid):
     ru = d.get("remind_unit","days")
     iv = int(d.get("remind_interval_value",7))
     iu = d.get("remind_interval_unit","days")
+    bot_key = d.get("bot_key","").strip()
     conn = get_db(); cur = conn.cursor()
     cur.execute("""
         UPDATE courses SET category_id=%s,title=%s,course_date=%s,course_time=%s,
         location=%s,description=%s,image_url=%s,remind_value=%s,remind_unit=%s,
-        remind_interval_value=%s,remind_interval_unit=%s WHERE id=%s
+        remind_interval_value=%s,remind_interval_unit=%s,bot_key=%s WHERE id=%s
     """, (d.get("category_id"), title, course_date, d.get("course_time","09:00"),
           d.get("location",""), d.get("description",""), d.get("image_url",""),
-          rv, ru, iv, iu, cid))
+          rv, ru, iv, iu, bot_key, cid))
     conn.commit(); cur.close(); conn.close()
     dates = generate_reminders(cid, course_date, rv, ru, iv, iu)
     return jsonify({"ok":True,"remind_count":len(dates)})
@@ -1002,6 +1037,7 @@ def get_scheduled():
         d = dict(r)
         if d.get("next_run"): d["next_run"] = str(d["next_run"])
         if d.get("created_at"): d["created_at"] = str(d["created_at"])
+        if d.get("end_time"): d["end_time"] = str(d["end_time"])
         result.append(d)
     return jsonify({"schedules": result})
 
@@ -1016,16 +1052,21 @@ def add_scheduled():
     iu = d.get("interval_unit","days")
     interval_seconds = unit_to_seconds(iv, iu)
     start_time = d.get("start_time","")
+    end_time_str = d.get("end_time","")
     try:
         next_run = datetime.fromisoformat(start_time).isoformat()
     except Exception:
         next_run = isonow()
+    try:
+        end_time = datetime.fromisoformat(end_time_str).isoformat() if end_time_str else None
+    except Exception:
+        end_time = None
     conn = get_db(); cur = conn.cursor()
     bot_key = d.get("bot_key","").strip()
     cur.execute("""
-        INSERT INTO scheduled_broadcasts (title,content,image_url,interval_seconds,next_run,active,bot_key,created_at)
-        VALUES (%s,%s,%s,%s,%s,TRUE,%s,%s)
-    """, (title, content_text, d.get("image_url",""), interval_seconds, next_run, bot_key, isonow()))
+        INSERT INTO scheduled_broadcasts (title,content,image_url,interval_seconds,next_run,end_time,active,bot_key,created_at)
+        VALUES (%s,%s,%s,%s,%s,%s,TRUE,%s,%s)
+    """, (title, content_text, d.get("image_url",""), interval_seconds, next_run, end_time, bot_key, isonow()))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok": True})
 
@@ -1041,22 +1082,27 @@ def update_scheduled(sid):
         iu = d.get("interval_unit","days")
         bot_key = d.get("bot_key","").strip()
         start_time = d.get("start_time","")
+        end_time_str = d.get("end_time","")
         try:
             next_run = datetime.fromisoformat(start_time).isoformat()
         except Exception:
             next_run = None
+        try:
+            end_time = datetime.fromisoformat(end_time_str).isoformat() if end_time_str else None
+        except Exception:
+            end_time = None
         if next_run:
             cur.execute("""
                 UPDATE scheduled_broadcasts
-                SET title=%s,content=%s,image_url=%s,interval_seconds=%s,bot_key=%s,next_run=%s
+                SET title=%s,content=%s,image_url=%s,interval_seconds=%s,bot_key=%s,next_run=%s,end_time=%s
                 WHERE id=%s
-            """, (d.get("title"), d.get("content"), d.get("image_url",""), unit_to_seconds(iv,iu), bot_key, next_run, sid))
+            """, (d.get("title"), d.get("content"), d.get("image_url",""), unit_to_seconds(iv,iu), bot_key, next_run, end_time, sid))
         else:
             cur.execute("""
                 UPDATE scheduled_broadcasts
-                SET title=%s,content=%s,image_url=%s,interval_seconds=%s,bot_key=%s
+                SET title=%s,content=%s,image_url=%s,interval_seconds=%s,bot_key=%s,end_time=%s
                 WHERE id=%s
-            """, (d.get("title"), d.get("content"), d.get("image_url",""), unit_to_seconds(iv,iu), bot_key, sid))
+            """, (d.get("title"), d.get("content"), d.get("image_url",""), unit_to_seconds(iv,iu), bot_key, end_time, sid))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok": True})
 
