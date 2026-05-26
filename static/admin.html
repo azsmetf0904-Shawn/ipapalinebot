@@ -622,6 +622,14 @@ textarea{resize:vertical;min-height:72px}
             </tbody>
           </table>
         </div>
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title"><i class="ti ti-stethoscope"></i> LINE 推播診斷</span>
+            <button class="btn btn-sm" id="diagnose-btn" onclick="runLineDiagnose()" style="color:#1A5CC4;border-color:#B8D0F8"><i class="ti ti-player-play"></i> 執行診斷</button>
+          </div>
+          <p style="font-size:12px;color:#999;margin-bottom:10px">驗證 Token 是否有效，並對所有群組測試推播（群組會收到一則測試訊息）。</p>
+          <div id="diagnose-result" style="display:none;font-size:13px;line-height:1.8"></div>
+        </div>
       </div>
 
     </div><!-- /content -->
@@ -1939,6 +1947,46 @@ async function triggerReminders(){
   const r = await api('/admin/check-reminders',{method:'POST'});
   if(r.ok) toast(`✅ 觸發完成 ${r.tw_time} | 待發 ${r.pending_entries} 筆，本次到期 ${r.due_entries} 筆`,'ok');
   else toast('觸發失敗','err');
+}
+
+async function runLineDiagnose(){
+  const btn = document.getElementById('diagnose-btn');
+  const div = document.getElementById('diagnose-result');
+  btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader"></i> 診斷中...';
+  div.style.display = 'none';
+  try {
+    const r = await api('/admin/line-diagnose', {method:'POST'});
+    let html = '';
+    // Token
+    if(r.token === 'ok'){
+      html += `<div style="color:#06A847">✅ Token 有效｜Bot：${esc(r.bot_name)}（${esc(r.bot_id)}）</div>`;
+    } else {
+      html += `<div style="color:#C62828">❌ Token 錯誤：${esc(r.token)}</div>`;
+      html += `<div style="color:#888;font-size:12px;margin-top:4px">👉 請到 Railway → Variables 確認 LINE_CHANNEL_ACCESS_TOKEN 是否正確</div>`;
+    }
+    // Groups
+    html += `<div style="margin-top:8px;font-weight:600">群組推播（共 ${r.group_count} 個）：</div>`;
+    if(!r.groups || r.groups.length === 0){
+      html += `<div style="color:#C62828">⚠️ 無群組，請先將機器人加入群組並傳送訊息</div>`;
+    } else {
+      r.groups.forEach(g => {
+        if(g.status === 'ok'){
+          html += `<div style="color:#06A847">✅ ${esc(g.gid)}… 推播成功</div>`;
+        } else {
+          const detail = g.detail ? JSON.stringify(g.detail) : '';
+          const hint = detail.includes('403') ? '（機器人不在群組中，請重新邀請）'
+                     : detail.includes('401') ? '（Token 無效）'
+                     : detail.includes('429') ? '（推播次數超過免費額度）'
+                     : '';
+          html += `<div style="color:#C62828">❌ ${esc(g.gid)}… ${esc(g.status)} ${hint}</div>`;
+          if(detail) html += `<div style="color:#999;font-size:11px;padding-left:16px">${esc(detail.slice(0,120))}</div>`;
+        }
+      });
+    }
+    div.innerHTML = html;
+    div.style.display = 'block';
+  } catch(e){ toast('診斷失敗：'+e.message,'err'); }
+  btn.disabled = false; btn.innerHTML = '<i class="ti ti-player-play"></i> 執行診斷';
 }
 
 // ── Helpers ──
