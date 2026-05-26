@@ -48,7 +48,7 @@ def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image
     """呼叫 Gemini API，回傳純文字結果。遇到 429 自動重試最多 _retry 次。"""
     import time
     GEMINI_URL = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-                  f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}")
+                  f"gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}")
     parts = []
     if image_b64:
         parts.append({"inline_data": {"mime_type": image_media_type, "data": image_b64}})
