@@ -721,12 +721,13 @@ def add_broadcast_entries():
         try:
             dt = datetime.fromisoformat(sa)
             # 若為 naive datetime（前端送台灣本地時間），補上台灣時區
+            # 確保帶台灣時區（+08:00），讓 PostgreSQL 正確存 TIMESTAMPTZ
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=TZ)
             cur.execute("""
                 INSERT INTO broadcast_schedule_entries
                   (source_type, source_id, send_at, sent, created_at)
-                VALUES (%s,%s,%s,FALSE,%s)
+                VALUES (%s,%s,%s::timestamptz,FALSE,%s)
             """, (src_type, int(src_id), dt.isoformat(), isonow()))
             count += 1
         except Exception as e:
