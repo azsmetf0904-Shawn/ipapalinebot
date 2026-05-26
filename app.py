@@ -1123,7 +1123,12 @@ def ai_parse_broadcast():
         if "```" in ai_text:
             ai_text = ai_text.split("```")[1]
             if ai_text.startswith("json"): ai_text = ai_text[4:]
-        c = json.loads(ai_text.strip())
+        # 擷取第一個完整 JSON 物件（與 ai_parse_course 一致）
+        start = ai_text.find("{")
+        end   = ai_text.rfind("}") + 1
+        if start == -1 or end == 0:
+            raise Exception("AI 未回傳有效 JSON")
+        c = json.loads(ai_text[start:end].strip())
 
         st = c.get("start_time","")
         if st:
