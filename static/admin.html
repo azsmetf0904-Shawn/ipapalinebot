@@ -336,6 +336,8 @@ textarea{resize:vertical;min-height:72px}
             <div class="fg span2"><label>圖片網址</label><input id="c-img" placeholder="https://...（選填）"></div>
           </div>
           <div class="sep"></div>
+          <div class="bot-select"><i class="ti ti-robot" aria-hidden="true"></i><label>使用機器人</label><select id="c-bot-key"><option value="">載入中...</option></select></div>
+          <div class="sep"></div>
           <div style="font-size:12px;color:#666;font-weight:500;margin-bottom:10px">🔔 提醒設定</div>
           <div class="remind-grid">
             <div class="fg"><label>提前</label><input id="c-rv" type="number" value="30" min="1"></div>
@@ -1129,7 +1131,7 @@ async function loadBots(){
   const opts = _bots.length
     ? _bots.map(b=>`<option value="${b.key}">${b.name}（${b.group_count} 群組）</option>`).join('')
     : '<option value="">（尚未設定機器人）</option>';
-  ['ann-bot-key','sann-bot-key','s-bot-key'].forEach(id=>{
+  ['ann-bot-key','sann-bot-key','s-bot-key','c-bot-key'].forEach(id=>{
     const el = document.getElementById(id);
     if(el) el.innerHTML = opts;
   });
@@ -1405,6 +1407,7 @@ function editCourse(id){
   document.getElementById('c-ru').value    = c.remind_unit||'days';
   document.getElementById('c-iv').value    = c.remind_interval_value||7;
   document.getElementById('c-iu').value    = c.remind_interval_unit||'days';
+  document.getElementById('c-bot-key').value = c.bot_key||'';
   document.getElementById('cancel-edit-btn').style.display='';
   window.scrollTo({top:0,behavior:'smooth'});
 }
@@ -1419,6 +1422,7 @@ function clearCourseForm(){
   document.getElementById('c-ru').value='days';
   document.getElementById('c-iv').value=7;
   document.getElementById('c-iu').value='days';
+  document.getElementById('c-bot-key').value='';
   document.getElementById('cancel-edit-btn').style.display='none';
 }
 
@@ -1438,6 +1442,7 @@ async function saveCourse(){
     remind_unit:  document.getElementById('c-ru').value,
     remind_interval_value: parseInt(document.getElementById('c-iv').value)||7,
     remind_interval_unit:  document.getElementById('c-iu').value,
+    bot_key: document.getElementById('c-bot-key').value,
   };
   const url    = cid ? `/admin/courses/${cid}` : '/admin/courses';
   const method = cid ? 'PUT' : 'POST';
