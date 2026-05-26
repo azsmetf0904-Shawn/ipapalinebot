@@ -319,8 +319,6 @@ def push_to_groups(messages: list, bot_key: str = "") -> tuple[int, int, str]:
                 logger.error(f"[{bot_key}] Push {gid[:20]}: {r.status_code} {err_msg}")
                 if r.status_code == 403 or "not a member" in err_msg.lower():
                     hint = "機器人不在群組中（請重新邀請）"
-                elif r.status_code == 400 and gid.startswith("C"):
-                    hint = "多人聊天室不支援推播（請改用正式群組，Group ID 須為 G 開頭）"
                 elif r.status_code == 401:
                     hint = f"Token 無效（{bot_key}），請更新環境變數"
                 elif r.status_code == 429:
@@ -1391,31 +1389,51 @@ def handle_text(event):
             f"/群組清單 — 查看群組\n\n"
             f"🌐 管理後台：\n{url}/admin")
 
-def handle_join(event, bot_key: str = ""):
-    if event["source"]["type"] == "group":
-        gid = event["source"]["groupId"]
-        headers = get_bot_headers(bot_key) if bot_key else HEADERS
+def _get_chat_id_and_name(event, headers) -> tuple[str, str]:
+    """從 join/leave event 取得 chat id 與名稱，支援 group 和 room（多人聊天室）"""
+    src = event["source"]
+    src_type = src.get("type","")
+    if src_type == "group":
+        gid = src["groupId"]
         try:
             r = requests.get(f"https://api.line.me/v2/bot/group/{gid}/summary",
                              headers=headers, timeout=8)
-            group_name = r.json().get("groupName","") if r.status_code==200 else ""
+            name = r.json().get("groupName","") if r.status_code==200 else ""
         except Exception:
-            group_name = ""
-        conn = get_db(); cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO groups (group_id, joined_at, group_name, bot_key)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (group_id) DO UPDATE SET group_name = EXCLUDED.group_name, bot_key = EXCLUDED.bot_key
-        """, (gid, isonow(), group_name, bot_key))
-        conn.commit(); cur.close(); conn.close()
-        logger.info(f"Group joined: {gid} name={group_name!r} bot={bot_key!r}")
+            name = ""
+        return gid, name
+    elif src_type == "room":
+        gid = src["roomId"]
+        return gid, ""   # room API 不提供名稱
+    return "", ""
+
+def handle_join(event, bot_key: str = ""):
+    headers = get_bot_headers(bot_key) if bot_key else HEADERS
+    gid, group_name = _get_chat_id_and_name(event, headers)
+    if not gid:
+        return
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO groups (group_id, joined_at, group_name, bot_key)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (group_id) DO UPDATE SET group_name = EXCLUDED.group_name, bot_key = EXCLUDED.bot_key
+    """, (gid, isonow(), group_name, bot_key))
+    conn.commit(); cur.close(); conn.close()
+    logger.info(f"Chat joined: {gid} name={group_name!r} bot={bot_key!r}")
 
 def handle_leave(event):
-    if event["source"]["type"] == "group":
-        gid = event["source"]["groupId"]
-        conn = get_db(); cur = conn.cursor()
-        cur.execute("DELETE FROM groups WHERE group_id=%s", (gid,))
-        conn.commit(); cur.close(); conn.close()
+    src = event["source"]
+    src_type = src.get("type","")
+    if src_type == "group":
+        gid = src["groupId"]
+    elif src_type == "room":
+        gid = src["roomId"]
+    else:
+        return
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("DELETE FROM groups WHERE group_id=%s", (gid,))
+    conn.commit(); cur.close(); conn.close()
+    logger.info(f"Chat left: {gid}")
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -1439,3 +1457,4 @@ def webhook():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
+    
