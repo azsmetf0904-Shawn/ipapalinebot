@@ -951,7 +951,7 @@ async function loadDpExisting() {
     sec.style.display = '';
     list.innerHTML = entries.map(e => `
       <div class="entry-row">
-        <span class="entry-time"><i class="ti ti-clock" style="font-size:12px;vertical-align:-1px"></i> ${e.send_at.slice(0,16).replace('T',' ')}</span>
+        <span class="entry-time"><i class="ti ti-clock" style="font-size:12px;vertical-align:-1px"></i> ${toTWDisplay(e.send_at)}</span>
         <span class="entry-status"><span class="badge bg-blue">待發</span></span>
         <button class="btn btn-sm btn-danger" onclick="dpDeleteEntry(${e.id})" title="刪除" style="margin-left:4px"><i class="ti ti-trash"></i></button>
       </div>`
@@ -989,6 +989,19 @@ async function dpConfirm() {
   }
 }
 
+
+// ── 時間顯示工具：將任何 ISO datetime 轉換為台灣時間顯示 ──
+function toTWDisplay(isoStr) {
+  if(!isoStr) return '—';
+  try {
+    const d = new Date(isoStr);
+    // 若解析失敗（NaN），直接截字串
+    if(isNaN(d.getTime())) return isoStr.slice(0,16).replace('T',' ');
+    return d.toLocaleString('sv', {timeZone:'Asia/Taipei'}).slice(0,16).replace('T',' ');
+  } catch(e) {
+    return isoStr.slice(0,16).replace('T',' ');
+  }
+}
 // ── Dashboard ──
 let _courses=[], _scheds=[], _catMap={};
 
@@ -1032,7 +1045,7 @@ async function loadDashboard(){
   sdiv.innerHTML = _scheds.length ? _scheds.slice(0,5).map(s=>`
     <div class="sch-card ${s.active?'':'off'}">
       <div class="sch-dot ${s.active?'':'off'}"></div>
-      <div class="sch-info"><div class="sch-title">${esc(s.title)}</div><div class="sch-meta">每 ${fmtInterval(s.interval_seconds)} · 下次: ${s.next_run?.slice(0,16)?.replace('T',' ')}</div></div>
+      <div class="sch-info"><div class="sch-title">${esc(s.title)}</div><div class="sch-meta">每 ${fmtInterval(s.interval_seconds)} · 下次: ${toTWDisplay(s.next_run)}</div></div>
       <span class="badge ${s.active?'bg-green':'bg-gray'}">${s.active?'啟用':'停用'}</span>
     </div>`).join('') : '<div style="text-align:center;color:#999;padding:16px">暫無排程廣播</div>';
 }
@@ -1383,8 +1396,8 @@ function renderSchedAnns(){
     <div class="ann-queue-item ${a.sent?'ann-sent':''}">
       <div class="ann-queue-time">
         ${a.sent
-          ? `<span class="badge bg-green" style="font-size:11px">已發送</span><br><span style="color:#999;font-weight:400">${(a.sent_time||'').slice(0,16).replace('T',' ')}</span>`
-          : `<i class="ti ti-clock" style="font-size:12px;vertical-align:-1px"></i> ${a.send_at.slice(0,16).replace('T',' ')}`}
+          ? `<span class="badge bg-green" style="font-size:11px">已發送</span><br><span style="color:#999;font-weight:400">${toTWDisplay(a.sent_time||'')}</span>`
+          : `<i class="ti ti-clock" style="font-size:12px;vertical-align:-1px"></i> ${toTWDisplay(a.send_at)}`}
       </div>
       <div class="ann-queue-info">
         ${a.title ? `<div style="font-size:12px;font-weight:600;margin-bottom:2px">${esc(a.title)}</div>` : ''}
@@ -1473,7 +1486,7 @@ function renderScheds(){
       <div class="sch-dot ${s.active?'':'off'}" id="sch-dot-${s.id}"></div>
       <div class="sch-info">
         <div class="sch-title">${esc(s.title)}</div>
-        <div class="sch-meta">${esc(s.content?.slice(0,60))||''}${(s.content?.length||0)>60?'...':''} · 每 ${fmtInterval(s.interval_seconds)} · 下次: ${s.next_run?.slice(0,16)?.replace('T',' ')}</div>
+        <div class="sch-meta">${esc(s.content?.slice(0,60))||''}${(s.content?.length||0)>60?'...':''} · 每 ${fmtInterval(s.interval_seconds)} · 下次: ${toTWDisplay(s.next_run)}</div>
       </div>
       <div class="sch-actions">
         <button class="toggle ${s.active?'on':''}" onclick="toggleSched(${s.id},this)"></button>
