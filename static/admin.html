@@ -126,6 +126,11 @@ textarea{resize:vertical;min-height:72px}
 .view-btn{padding:5px 12px;font-size:12px;border-radius:6px;border:1px solid #E0E0DC;background:#fff;cursor:pointer;color:#666;font-family:inherit}
 .view-btn.active{background:#06C755;border-color:#06C755;color:#fff}
 
+/* Bot selector */
+.bot-select{display:flex;align-items:center;gap:8px;padding:10px 14px;background:#F0FBF5;border:1px solid #B2DFC4;border-radius:10px;margin-bottom:14px}
+.bot-select label{font-size:12px;color:#0A7A3E;font-weight:500;white-space:nowrap}
+.bot-select select{flex:1;font-size:13px;border:1px solid #B2DFC4;border-radius:7px;padding:5px 9px;background:#fff;color:#1A1A1A;outline:none}
+.bot-select i{font-size:16px;color:#06A847}
 /* Scheduled announcement queue */
 .ann-queue-item{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:#FAFAF8;border:1px solid #E8E8E4;border-radius:8px;margin-bottom:8px}
 .ann-queue-time{font-size:12px;font-weight:600;color:#1A5CC4;white-space:nowrap;padding-top:1px;min-width:120px}
@@ -391,6 +396,7 @@ textarea{resize:vertical;min-height:72px}
 
           <!-- 立即發送 -->
           <div id="ann-tab-immediate">
+            <div class="bot-select"><i class="ti ti-robot" aria-hidden="true"></i><label>使用機器人</label><select id="ann-bot-key"><option value="">載入中...</option></select></div>
             <div class="fg"><label>公告內容 *</label><textarea id="ann-text" placeholder="輸入公告內容..." style="min-height:120px" oninput="previewAnn()"></textarea><div class="char-cnt" id="ann-cnt">0 字</div></div>
             <div class="fg"><label>附圖網址（選填）</label><input id="ann-img" type="url" placeholder="https://..." oninput="previewAnn()"></div>
             <div class="sep"></div>
@@ -404,6 +410,7 @@ textarea{resize:vertical;min-height:72px}
 
           <!-- 排程發送 -->
           <div id="ann-tab-scheduled" style="display:none">
+            <div class="bot-select"><i class="ti ti-robot" aria-hidden="true"></i><label>使用機器人</label><select id="sann-bot-key"><option value="">載入中...</option></select></div>
             <div class="grid2">
               <div class="fg"><label>公告標題（內部識別）</label><input id="sann-title" placeholder="例：五月份活動通知"></div>
               <div class="fg"><label>發送時間 *</label><input id="sann-send-at" type="datetime-local"></div>
@@ -466,6 +473,7 @@ textarea{resize:vertical;min-height:72px}
         </div>
         <div class="card">
           <div class="card-head"><span class="card-title"><i class="ti ti-plus"></i> 新增排程廣播</span></div>
+          <div class="bot-select"><i class="ti ti-robot" aria-hidden="true"></i><label>使用機器人</label><select id="s-bot-key"><option value="">載入中...</option></select></div>
           <div class="grid2">
             <div class="fg"><label>標題（內部識別）</label><input id="s-title" placeholder="例：每週業績提醒"></div>
             <div class="fg"><label>開始時間</label><input id="s-start" type="datetime-local"></div>
@@ -581,6 +589,10 @@ textarea{resize:vertical;min-height:72px}
                 <option value="客戶">
                 <option value="合作夥伴">
               </datalist>
+            </div>
+            <div class="fg">
+              <label>綁定機器人 <span style="font-size:11px;color:#999">（此群組使用哪個帳號發送）</span></label>
+              <select id="ge-bot-key"><option value="">（請選擇機器人）</option></select>
             </div>
           </div>
           <div style="display:flex;justify-content:flex-end;margin-top:8px">
@@ -786,7 +798,8 @@ function go(id, btn){
   if(btn) btn.classList.add('active');
   else { const btns=[...document.querySelectorAll('.nav-item')]; const b=btns.find(b=>b.onclick&&b.onclick.toString().includes("'"+id+"'")); if(b)b.classList.add('active'); }
   if(id==='courses') loadCourses(), loadCategories();
-  if(id==='dashboard') loadDashboard();
+  if(id==='dashboard') loadBots();
+loadDashboard();
   if(id==='scheduled') loadScheduled();
   if(id==='groups') loadGroups();
   if(id==='categories') loadCategories();
@@ -1058,6 +1071,20 @@ function toTWDisplay(isoStr) {
     return isoStr.slice(0,16).replace('T',' ');
   }
 }
+// ── Bots ──
+let _bots = [];
+async function loadBots(){
+  const r = await api('/admin/bots');
+  _bots = r.bots || [];
+  const opts = _bots.length
+    ? _bots.map(b=>`<option value="${b.key}">${b.name}（${b.group_count} 群組）</option>`).join('')
+    : '<option value="">（尚未設定機器人）</option>';
+  ['ann-bot-key','sann-bot-key','s-bot-key'].forEach(id=>{
+    const el = document.getElementById(id);
+    if(el) el.innerHTML = opts;
+  });
+}
+
 // ── Dashboard ──
 let _courses=[], _scheds=[], _catMap={};
 
@@ -1608,8 +1635,10 @@ async function sendAnn(){
   const text = document.getElementById('ann-text').value.trim();
   const img  = document.getElementById('ann-img').value.trim();
   if(!text&&!img){ toast('請輸入公告內容','err'); return; }
-  const r = await api('/admin/send',{method:'POST',body:JSON.stringify({text,image_url:img})});
+  const bot_key = document.getElementById('ann-bot-key').value;
+  const r = await api('/admin/send',{method:'POST',body:JSON.stringify({text,image_url:img,bot_key})});
   if(r.ok||r.ok===0){ toast(`公告已發送至 ${r.ok}/${r.total} 個群組 ✓`,'ok'); document.getElementById('ann-text').value=''; document.getElementById('ann-img').value=''; previewAnn(); }
+  if(r.error){ toast(r.error,'err'); }
   else toast('發送失敗','err');
 }
 
@@ -1745,6 +1774,7 @@ async function addScheduled(){
   const body = {
     title, content,
     image_url:      document.getElementById('s-img').value.trim(),
+    bot_key:        document.getElementById('s-bot-key').value,
     interval_value: parseFloat(document.getElementById('s-iv').value)||7,
     interval_unit:  document.getElementById('s-iu').value,
     start_time:     (document.getElementById('s-start').value ? document.getElementById('s-start').value + ':00+08:00' : new Date().toISOString()),
@@ -1869,7 +1899,7 @@ async function saveGroupEdit(){
   const name = document.getElementById('ge-name').value.trim();
   const type = document.getElementById('ge-type').value.trim();
   const r = await api(`/admin/groups/${encodeURIComponent(gid)}`,{
-    method:'PUT', body:JSON.stringify({group_name:name, group_type:type})
+    method:'PUT', body:JSON.stringify({group_name:name, group_type:type, bot_key:document.getElementById('ge-bot-key').value})
   });
   if(r.ok){ toast('群組資訊已更新','ok'); closeGroupEdit(); loadGroups(); }
   else toast(r.error||'更新失敗','err');
