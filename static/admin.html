@@ -1280,7 +1280,7 @@ async function deleteCourse(id){
 
 async function sendCourseNow(id){
   const r = await api(`/admin/courses/${id}/send-now`,{method:'POST'});
-  if(r.ok) toast(`已推播至 ${r.ok}/${r.total} 個群組 ✓`,'ok');
+  if(r.ok != null && r.total != null) toast(`已推播至 ${r.ok}/${r.total} 個群組 ✓`,'ok');
   else toast(r.error||'發送失敗','err');
 }
 
@@ -1772,7 +1772,7 @@ async function toggleSched(id, btn){
 
 async function sendSchedNow(id){
   const r = await api(`/admin/scheduled/${id}/send-now`,{method:'POST'});
-  if(r.ok||r.ok===0) toast(`已推播至 ${r.ok}/${r.total} 個群組 ✓`,'ok');
+  if(r.ok != null && r.total != null) toast(`已推播至 ${r.ok}/${r.total} 個群組 ✓`,'ok');
   else toast(r.error||'發送失敗','err');
 }
 
