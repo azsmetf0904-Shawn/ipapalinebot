@@ -129,6 +129,17 @@ def init_db():
             sent_at     TIMESTAMPTZ NOT NULL,
             group_count INTEGER DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS scheduled_announcements (
+            id          SERIAL PRIMARY KEY,
+            title       TEXT NOT NULL DEFAULT '',
+            content     TEXT NOT NULL,
+            image_url   TEXT DEFAULT '',
+            send_at     TIMESTAMPTZ NOT NULL,
+            sent        BOOLEAN DEFAULT FALSE,
+            sent_at     TIMESTAMPTZ,
+            group_count INTEGER DEFAULT 0,
+            created_at  TIMESTAMPTZ NOT NULL
+        );
     """)
     # 預設分類
     for name, color in [("招商活動","#FF6B35"),("系統會議","#1A73E8"),("課程培訓","#06C755"),("其他","#9E9E9E")]:
@@ -280,11 +291,34 @@ def check_scheduled_broadcasts():
     conn.commit()
     cur.close(); conn.close()
 
-# 排程：固定台灣時間 08:00 + 每 15 分鐘廣播檢查
+# ── 一次性排程公告（每 5 分鐘檢查） ──
+def check_scheduled_announcements():
+    now = now_tw()
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM scheduled_announcements WHERE sent=FALSE AND send_at <= %s", (now,))
+    rows = cur.fetchall()
+    logger.info(f"[SchedAnn] Checking at {now.isoformat()}, found {len(rows)} due")
+    for row in rows:
+        msgs = []
+        if row["image_url"]:
+            msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
+        msgs.append({"type":"text","text":row["content"]})
+        ok, total = push_to_groups(msgs)
+        cur.execute(
+            "UPDATE scheduled_announcements SET sent=TRUE, sent_at=%s, group_count=%s WHERE id=%s",
+            (now_tw().isoformat(), total, row["id"])
+        )
+        logger.info(f"[SchedAnn] id={row['id']} sent {ok}/{total}")
+    conn.commit(); cur.close(); conn.close()
+
+# 排程：固定台灣時間 08:00 + 每 15 分鐘廣播檢查 + 每 5 分鐘一次性公告
 scheduler.add_job(check_and_send_reminders, "cron", hour=8, minute=0,
                   timezone="Asia/Taipei", id="daily_reminder", replace_existing=True)
 scheduler.add_job(check_scheduled_broadcasts, "interval", minutes=15,
                   id="sched_broadcast", replace_existing=True)
+scheduler.add_job(check_scheduled_announcements, "interval", minutes=5,
+                  id="sched_announce", replace_existing=True)
 
 def check_admin(req) -> bool:
     return req.headers.get("X-Admin-Pass") == ADMIN_PASSWORD
@@ -517,6 +551,66 @@ def admin_send():
     conn = get_db(); cur = conn.cursor()
     cur.execute("INSERT INTO announcements (content,sent_at,group_count) VALUES (%s,%s,%s)",
                 (text, isonow(), total))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok":ok,"total":total})
+
+@app.route("/admin/scheduled-announcements", methods=["GET"])
+def get_scheduled_announcements():
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT * FROM scheduled_announcements ORDER BY send_at DESC LIMIT 50")
+    rows = cur.fetchall(); cur.close(); conn.close()
+    result = []
+    for r in rows:
+        d = dict(r)
+        if d.get("send_at"): d["send_at"] = str(d["send_at"])
+        if d.get("sent_at"): d["sent_at"] = str(d["sent_at"])
+        if d.get("created_at"): d["created_at"] = str(d["created_at"])
+        result.append(d)
+    return jsonify({"announcements": result})
+
+@app.route("/admin/scheduled-announcements", methods=["POST"])
+def add_scheduled_announcement():
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    d = request.json
+    content = d.get("content","").strip()
+    send_at_str = d.get("send_at","").strip()
+    if not content: return jsonify({"ok":False,"error":"請填寫公告內容"})
+    if not send_at_str: return jsonify({"ok":False,"error":"請選擇發送時間"})
+    try:
+        send_at = datetime.fromisoformat(send_at_str)
+    except Exception:
+        return jsonify({"ok":False,"error":"時間格式錯誤"})
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO scheduled_announcements (title,content,image_url,send_at,sent,created_at)
+        VALUES (%s,%s,%s,%s,FALSE,%s)
+    """, (d.get("title","").strip(), content, d.get("image_url","").strip(), send_at.isoformat(), isonow()))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True})
+
+@app.route("/admin/scheduled-announcements/<int:aid>", methods=["DELETE"])
+def delete_scheduled_announcement(aid):
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("DELETE FROM scheduled_announcements WHERE id=%s AND sent=FALSE", (aid,))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True})
+
+@app.route("/admin/scheduled-announcements/<int:aid>/send-now", methods=["POST"])
+def send_scheduled_announcement_now(aid):
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT * FROM scheduled_announcements WHERE id=%s", (aid,))
+    row = cur.fetchone()
+    if not row: cur.close(); conn.close(); return jsonify({"ok":False,"error":"找不到公告"})
+    msgs = []
+    if row["image_url"]:
+        msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
+    msgs.append({"type":"text","text":row["content"]})
+    ok, total = push_to_groups(msgs)
+    cur.execute("UPDATE scheduled_announcements SET sent=TRUE, sent_at=%s, group_count=%s WHERE id=%s",
+                (isonow(), total, aid))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok":ok,"total":total})
 
