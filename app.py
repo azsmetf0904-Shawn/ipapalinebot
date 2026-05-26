@@ -28,17 +28,52 @@ def isonow() -> str:
     return now_tw().isoformat()
 
 # ── 環境變數 ──
-LINE_CHANNEL_SECRET      = os.environ["LINE_CHANNEL_SECRET"]
-LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
-ADMIN_USER_IDS           = [x.strip() for x in os.environ.get("ADMIN_USER_IDS", "").split(",") if x.strip()]
-ADMIN_PASSWORD           = os.environ.get("ADMIN_PASSWORD", "ipapa2026")
-DATABASE_URL             = os.environ["DATABASE_URL"]          # Railway 自動注入
-DEFAULT_GROUP_IDS        = [x.strip() for x in os.environ.get("DEFAULT_GROUP_IDS", "").split(",") if x.strip()]
-IMGBB_API_KEY            = os.environ.get("IMGBB_API_KEY", "")
-APP_URL                  = os.environ.get("APP_URL", "")       # e.g. https://xxx.railway.app
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+ADMIN_USER_IDS  = [x.strip() for x in os.environ.get("ADMIN_USER_IDS", "").split(",") if x.strip()]
+ADMIN_PASSWORD  = os.environ.get("ADMIN_PASSWORD", "ipapa2026")
+DATABASE_URL    = os.environ["DATABASE_URL"]   # Railway 自動注入
+IMGBB_API_KEY   = os.environ.get("IMGBB_API_KEY", "")
+APP_URL         = os.environ.get("APP_URL", "")
+GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
-HEADERS = {
+# ── 多機器人設定 ──
+# 每個 Bot 用環境變數 BOT_<KEY>_TOKEN / BOT_<KEY>_SECRET / BOT_<KEY>_NAME / BOT_<KEY>_GROUPS 設定
+# BOT_<KEY>_GROUPS 為逗號分隔的群組 ID（選填；也可在後台動態綁定）
+# 向下相容：若只有舊版 LINE_CHANNEL_ACCESS_TOKEN，自動當成 "main" bot
+def _load_bots() -> dict:
+    bots = {}
+    # 掃描所有 BOT_xxx_TOKEN 環境變數
+    for k, v in os.environ.items():
+        if k.startswith("BOT_") and k.endswith("_TOKEN") and v.strip():
+            key = k[4:-6]  # 擷取中間的 KEY
+            bots[key] = {
+                "name":   os.environ.get(f"BOT_{key}_NAME", key),
+                "token":  v.strip(),
+                "secret": os.environ.get(f"BOT_{key}_SECRET", ""),
+                "groups": [g.strip() for g in os.environ.get(f"BOT_{key}_GROUPS", "").split(",") if g.strip()],
+            }
+    # 向下相容：舊版單一 Token
+    if not bots and os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"):
+        bots["main"] = {
+            "name":   os.environ.get("BOT_MAIN_NAME", "主要機器人"),
+            "token":  os.environ["LINE_CHANNEL_ACCESS_TOKEN"],
+            "secret": os.environ.get("LINE_CHANNEL_SECRET", ""),
+            "groups": [x.strip() for x in os.environ.get("DEFAULT_GROUP_IDS", "").split(",") if x.strip()],
+        }
+    return bots
+
+BOTS = _load_bots()
+
+# 向下相容：保留舊變數（用第一個 bot 填充，供 verify_signature 等使用）
+_first_bot = next(iter(BOTS.values())) if BOTS else {}
+LINE_CHANNEL_SECRET       = _first_bot.get("secret", os.environ.get("LINE_CHANNEL_SECRET", ""))
+LINE_CHANNEL_ACCESS_TOKEN = _first_bot.get("token",  os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", ""))
+
+def get_bot_headers(bot_key: str) -> dict:
+    token = BOTS.get(bot_key, {}).get("token", LINE_CHANNEL_ACCESS_TOKEN)
+    return {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+
+# 預設用第一個 bot（向下相容 fetch_group_name 等舊函式）
+HEADERS = get_bot_headers(next(iter(BOTS), "main")) if BOTS else {
     "Content-Type": "application/json",
     "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
 }
@@ -141,6 +176,7 @@ def init_db():
         ALTER TABLE groups ADD COLUMN IF NOT EXISTS group_name TEXT DEFAULT '';
         ALTER TABLE groups ADD COLUMN IF NOT EXISTS group_type TEXT DEFAULT 'general';
         ALTER TABLE groups ADD COLUMN IF NOT EXISTS active     BOOLEAN DEFAULT TRUE;
+        ALTER TABLE groups ADD COLUMN IF NOT EXISTS bot_key    TEXT DEFAULT '';
         CREATE TABLE IF NOT EXISTS categories (
             id         SERIAL PRIMARY KEY,
             name       TEXT NOT NULL UNIQUE,
@@ -176,8 +212,10 @@ def init_db():
             interval_seconds REAL NOT NULL DEFAULT 86400,
             next_run         TIMESTAMPTZ NOT NULL,
             active           BOOLEAN DEFAULT TRUE,
+            bot_key          TEXT DEFAULT '',
             created_at       TIMESTAMPTZ NOT NULL
         );
+        ALTER TABLE scheduled_broadcasts ADD COLUMN IF NOT EXISTS bot_key TEXT DEFAULT '';
         CREATE TABLE IF NOT EXISTS announcements (
             id          SERIAL PRIMARY KEY,
             content     TEXT NOT NULL,
@@ -193,8 +231,10 @@ def init_db():
             sent        BOOLEAN DEFAULT FALSE,
             sent_time   TIMESTAMPTZ,
             group_count INTEGER DEFAULT 0,
+            bot_key     TEXT DEFAULT '',
             created_at  TIMESTAMPTZ NOT NULL
         );
+        ALTER TABLE scheduled_announcements ADD COLUMN IF NOT EXISTS bot_key TEXT DEFAULT '';
         CREATE TABLE IF NOT EXISTS broadcast_schedule_entries (
             id           SERIAL PRIMARY KEY,
             source_type  TEXT NOT NULL,
@@ -203,8 +243,10 @@ def init_db():
             sent         BOOLEAN DEFAULT FALSE,
             sent_time    TIMESTAMPTZ,
             group_count  INTEGER DEFAULT 0,
+            bot_key      TEXT DEFAULT '',
             created_at   TIMESTAMPTZ NOT NULL
         );
+        ALTER TABLE broadcast_schedule_entries ADD COLUMN IF NOT EXISTS bot_key TEXT DEFAULT '';
     """)
     # 預設分類
     for name, color in [("招商活動","#FF6B35"),("系統會議","#1A73E8"),("課程培訓","#06C755"),("其他","#9E9E9E")]:
@@ -222,57 +264,68 @@ def unit_to_seconds(value, unit: str) -> float:
     mapping = {"seconds":1,"minutes":60,"hours":3600,"days":86400,"weeks":604800,"months":2592000,"years":31536000}
     return float(value) * mapping.get(unit, 86400)
 
-def get_all_group_ids() -> list[str]:
+def get_all_group_ids(bot_key: str = "") -> list[str]:
+    """取得指定 bot 應發送的群組 ID 清單。"""
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT group_id FROM groups WHERE active = TRUE")
+    if bot_key and bot_key in BOTS:
+        cur.execute("SELECT group_id FROM groups WHERE active=TRUE AND (bot_key=%s OR bot_key IS NULL OR bot_key='')", (bot_key,))
+    else:
+        cur.execute("SELECT group_id FROM groups WHERE active=TRUE")
     db_groups = [r["group_id"] for r in cur.fetchall()]
     cur.close(); conn.close()
-    return list(set(db_groups + DEFAULT_GROUP_IDS))
+    static = BOTS.get(bot_key, {}).get("groups", []) if bot_key else []
+    return list(set(db_groups + static))
 
-def verify_signature(body: bytes, sig: str) -> bool:
-    h = hmac.new(LINE_CHANNEL_SECRET.encode(), body, hashlib.sha256).digest()
+def verify_signature(body: bytes, sig: str, secret: str = "") -> bool:
+    s = secret or LINE_CHANNEL_SECRET
+    h = hmac.new(s.encode(), body, hashlib.sha256).digest()
     return hmac.compare_digest(base64.b64encode(h).decode(), sig)
 
-def push_to_groups(messages: list) -> tuple[int, int, str]:
-    """回傳 (ok_count, total_count, error_hint)"""
-    groups = get_all_group_ids()
+def push_to_groups(messages: list, bot_key: str = "") -> tuple[int, int, str]:
+    """回傳 (ok_count, total_count, error_hint)
+    bot_key: 指定用哪個機器人帳號發送；空字串 = 向下相容（用第一個 bot）
+    """
+    if not bot_key:
+        bot_key = next(iter(BOTS), "")
+    headers = get_bot_headers(bot_key)
+    groups  = get_all_group_ids(bot_key)
     ok = 0
     errors = []
     for gid in groups:
         try:
-            r = requests.post("https://api.line.me/v2/bot/message/push", headers=HEADERS,
+            r = requests.post("https://api.line.me/v2/bot/message/push", headers=headers,
                 json={"to": gid, "messages": messages}, timeout=10)
             if r.status_code == 200:
                 ok += 1
-                logger.info(f"Push {gid[:20]}: OK")
+                logger.info(f"[{bot_key}] Push {gid[:20]}: OK")
             else:
                 try:
                     err_body = r.json()
                     err_msg = err_body.get("message", "")
                 except Exception:
                     err_msg = r.text[:100]
-                logger.error(f"Push {gid[:20]}: {r.status_code} {err_msg}")
-                # 產生人類可讀的錯誤提示
+                logger.error(f"[{bot_key}] Push {gid[:20]}: {r.status_code} {err_msg}")
                 if r.status_code == 403 or "not a member" in err_msg.lower():
                     hint = "機器人不在群組中（請重新邀請）"
                 elif r.status_code == 400 and gid.startswith("C"):
                     hint = "多人聊天室不支援推播（請改用正式群組，Group ID 須為 G 開頭）"
                 elif r.status_code == 401:
-                    hint = "Token 無效，請更新 LINE_CHANNEL_ACCESS_TOKEN"
+                    hint = f"Token 無效（{bot_key}），請更新環境變數"
                 elif r.status_code == 429:
-                    hint = "推播次數已達免費上限（每月 200 則）"
+                    hint = f"推播次數已達免費上限（{bot_key} 每月 200 則）"
                 else:
                     hint = f"LINE API 錯誤 {r.status_code}: {err_msg[:60]}"
                 errors.append(hint)
         except Exception as e:
-            logger.error(f"Push {gid[:20]}: exception {e}")
+            logger.error(f"[{bot_key}] Push {gid[:20]}: exception {e}")
             errors.append(str(e)[:80])
     error_hint = errors[0] if errors and ok == 0 else ""
     return ok, len(groups), error_hint
 
-def push_text(text: str) -> tuple[int, int, str]:
-    return push_to_groups([{"type": "text", "text": text}])
+def push_text(text: str, bot_key: str = "") -> tuple[int, int, str]:
+    return push_to_groups([{"type": "text", "text": text}], bot_key=bot_key)
+
 
 def reply_message(reply_token: str, text: str):
     requests.post("https://api.line.me/v2/bot/message/reply", headers=HEADERS,
@@ -374,7 +427,7 @@ def check_scheduled_broadcasts():
         if row["image_url"]:
             msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
         msgs.append({"type":"text","text":row["content"]})
-        ok, total, _err = push_to_groups(msgs)
+        ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
         next_run = (now_tw() + timedelta(seconds=row["interval_seconds"])).isoformat()
         cur.execute("UPDATE scheduled_broadcasts SET next_run=%s WHERE id=%s", (next_run, row["id"]))
         logger.info(f"[Broadcast] '{row['title']}' sent {ok}/{total}, next_run={next_run}")
@@ -395,7 +448,7 @@ def check_scheduled_announcements():
         if row["image_url"]:
             msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
         msgs.append({"type":"text","text":row["content"]})
-        ok, total, _err = push_to_groups(msgs)
+        ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
         cur.execute(
             "UPDATE scheduled_announcements SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
             (now_tw().isoformat(), total, row["id"])
@@ -501,14 +554,27 @@ def admin_info():
     return jsonify({
         "timezone": "Asia/Taipei",
         "current_time": now_tw().strftime("%Y-%m-%d %H:%M:%S"),
-        "groups": len(get_all_group_ids())
+        "groups": len(get_all_group_ids()),
+        "bots": {k: {"name": v["name"], "group_count": len(get_all_group_ids(k))} for k, v in BOTS.items()}
     })
+
+@app.route("/admin/bots", methods=["GET"])
+def get_bots():
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    result = []
+    for k, v in BOTS.items():
+        result.append({
+            "key": k,
+            "name": v["name"],
+            "group_count": len(get_all_group_ids(k)),
+        })
+    return jsonify({"bots": result})
 
 @app.route("/admin/groups")
 def get_groups():
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
     conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT group_id, joined_at, group_name, group_type, active FROM groups ORDER BY joined_at DESC")
+    cur.execute("SELECT group_id, joined_at, group_name, group_type, active, bot_key FROM groups ORDER BY joined_at DESC")
     rows = cur.fetchall(); cur.close(); conn.close()
     result = []
     for r in rows:
@@ -529,6 +595,8 @@ def update_group(gid):
         fields.append("group_name=%s"); vals.append(str(d["group_name"]).strip())
     if "group_type" in d:
         fields.append("group_type=%s"); vals.append(str(d["group_type"]).strip())
+    if "bot_key" in d:
+        fields.append("bot_key=%s"); vals.append(str(d["bot_key"]).strip())
     if not fields:
         cur.close(); conn.close()
         return jsonify({"ok": False, "error": "no fields to update"})
@@ -680,7 +748,9 @@ def send_course_now(cid):
     if row["image_url"]:
         msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
     msgs.append({"type":"text","text":text})
-    ok, total, _err = push_to_groups(msgs)
+    d2 = request.json or {}
+    bot_key = d2.get("bot_key","").strip()
+    ok, total, _err = push_to_groups(msgs, bot_key=bot_key)
     resp = {"ok": ok, "total": total}
     if _err: resp["error"] = _err
     return jsonify(resp)
@@ -689,19 +759,22 @@ def send_course_now(cid):
 def admin_send():
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
     d = request.json
-    text = d.get("text","").strip()
+    text    = d.get("text","").strip()
     img_url = d.get("image_url","").strip()
+    bot_key = d.get("bot_key","").strip()
     msgs = []
     if img_url: msgs.append({"type":"image","originalContentUrl":img_url,"previewImageUrl":img_url})
     if text:    msgs.append({"type":"text","text":text})
     if not msgs: return jsonify({"ok":0,"total":0})
-    ok, total, _err = push_to_groups(msgs)
+    ok, total, _err = push_to_groups(msgs, bot_key=bot_key)
 
     conn = get_db(); cur = conn.cursor()
     cur.execute("INSERT INTO announcements (content,sent_at,group_count) VALUES (%s,%s,%s)",
                 (text, isonow(), total))
     conn.commit(); cur.close(); conn.close()
-    return jsonify({"ok":ok,"total":total})
+    resp = {"ok":ok,"total":total}
+    if _err: resp["error"] = _err
+    return jsonify(resp)
 
 @app.route("/admin/scheduled-announcements", methods=["GET"])
 def get_scheduled_announcements():
@@ -732,11 +805,12 @@ def add_scheduled_announcement():
             send_at = send_at.replace(tzinfo=TZ)
     except Exception:
         return jsonify({"ok":False,"error":"時間格式錯誤"})
+    bot_key = d.get("bot_key","").strip()
     conn = get_db(); cur = conn.cursor()
     cur.execute("""
-        INSERT INTO scheduled_announcements (title,content,image_url,send_at,sent,created_at)
-        VALUES (%s,%s,%s,%s,FALSE,%s)
-    """, (d.get("title","").strip(), content, d.get("image_url","").strip(), send_at.isoformat(), isonow()))
+        INSERT INTO scheduled_announcements (title,content,image_url,send_at,sent,bot_key,created_at)
+        VALUES (%s,%s,%s,%s,FALSE,%s,%s)
+    """, (d.get("title","").strip(), content, d.get("image_url","").strip(), send_at.isoformat(), bot_key, isonow()))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok": True})
 
@@ -759,7 +833,7 @@ def send_scheduled_announcement_now(aid):
     if row["image_url"]:
         msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
     msgs.append({"type":"text","text":row["content"]})
-    ok, total, _err = push_to_groups(msgs)
+    ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
     cur.execute("UPDATE scheduled_announcements SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
                 (isonow(), total, aid))
     conn.commit(); cur.close(); conn.close()
@@ -902,10 +976,11 @@ def add_scheduled():
     except Exception:
         next_run = isonow()
     conn = get_db(); cur = conn.cursor()
+    bot_key = d.get("bot_key","").strip()
     cur.execute("""
-        INSERT INTO scheduled_broadcasts (title,content,image_url,interval_seconds,next_run,active,created_at)
-        VALUES (%s,%s,%s,%s,%s,TRUE,%s)
-    """, (title, content_text, d.get("image_url",""), interval_seconds, next_run, isonow()))
+        INSERT INTO scheduled_broadcasts (title,content,image_url,interval_seconds,next_run,active,bot_key,created_at)
+        VALUES (%s,%s,%s,%s,%s,TRUE,%s,%s)
+    """, (title, content_text, d.get("image_url",""), interval_seconds, next_run, bot_key, isonow()))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok": True})
 
@@ -944,7 +1019,7 @@ def send_scheduled_now(sid):
     if row["image_url"]:
         msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
     msgs.append({"type":"text","text":row["content"]})
-    ok, total, _err = push_to_groups(msgs)
+    ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
     next_run = (now_tw() + timedelta(seconds=row["interval_seconds"])).isoformat()
     cur.execute("UPDATE scheduled_broadcasts SET next_run=%s WHERE id=%s", (next_run, sid))
     conn.commit(); cur.close(); conn.close()
