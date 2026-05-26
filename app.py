@@ -234,9 +234,11 @@ def verify_signature(body: bytes, sig: str) -> bool:
     h = hmac.new(LINE_CHANNEL_SECRET.encode(), body, hashlib.sha256).digest()
     return hmac.compare_digest(base64.b64encode(h).decode(), sig)
 
-def push_to_groups(messages: list) -> tuple[int, int]:
+def push_to_groups(messages: list) -> tuple[int, int, str]:
+    """回傳 (ok_count, total_count, error_hint)"""
     groups = get_all_group_ids()
     ok = 0
+    errors = []
     for gid in groups:
         try:
             r = requests.post("https://api.line.me/v2/bot/message/push", headers=HEADERS,
@@ -247,14 +249,29 @@ def push_to_groups(messages: list) -> tuple[int, int]:
             else:
                 try:
                     err_body = r.json()
+                    err_msg = err_body.get("message", "")
                 except Exception:
-                    err_body = r.text[:200]
-                logger.error(f"Push {gid[:20]}: {r.status_code} {err_body}")
+                    err_msg = r.text[:100]
+                logger.error(f"Push {gid[:20]}: {r.status_code} {err_msg}")
+                # 產生人類可讀的錯誤提示
+                if r.status_code == 403 or "not a member" in err_msg.lower():
+                    hint = "機器人不在群組中（請重新邀請）"
+                elif r.status_code == 400 and gid.startswith("C"):
+                    hint = "多人聊天室不支援推播（請改用正式群組，Group ID 須為 G 開頭）"
+                elif r.status_code == 401:
+                    hint = "Token 無效，請更新 LINE_CHANNEL_ACCESS_TOKEN"
+                elif r.status_code == 429:
+                    hint = "推播次數已達免費上限（每月 200 則）"
+                else:
+                    hint = f"LINE API 錯誤 {r.status_code}: {err_msg[:60]}"
+                errors.append(hint)
         except Exception as e:
             logger.error(f"Push {gid[:20]}: exception {e}")
-    return ok, len(groups)
+            errors.append(str(e)[:80])
+    error_hint = errors[0] if errors and ok == 0 else ""
+    return ok, len(groups), error_hint
 
-def push_text(text: str):
+def push_text(text: str) -> tuple[int, int, str]:
     return push_to_groups([{"type": "text", "text": text}])
 
 def reply_message(reply_token: str, text: str):
@@ -334,7 +351,7 @@ def check_and_send_reminders():
             msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
         msgs.append({"type":"text","text":text})
 
-        ok, _ = push_to_groups(msgs)
+        ok, _, _ = push_to_groups(msgs)
         if ok > 0:
             cur.execute("UPDATE course_reminders SET sent=TRUE WHERE id=%s", (row["id"],))
 
@@ -357,7 +374,7 @@ def check_scheduled_broadcasts():
         if row["image_url"]:
             msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
         msgs.append({"type":"text","text":row["content"]})
-        ok, total = push_to_groups(msgs)
+        ok, total, _err = push_to_groups(msgs)
         next_run = (now_tw() + timedelta(seconds=row["interval_seconds"])).isoformat()
         cur.execute("UPDATE scheduled_broadcasts SET next_run=%s WHERE id=%s", (next_run, row["id"]))
         logger.info(f"[Broadcast] '{row['title']}' sent {ok}/{total}, next_run={next_run}")
@@ -378,7 +395,7 @@ def check_scheduled_announcements():
         if row["image_url"]:
             msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
         msgs.append({"type":"text","text":row["content"]})
-        ok, total = push_to_groups(msgs)
+        ok, total, _err = push_to_groups(msgs)
         cur.execute(
             "UPDATE scheduled_announcements SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
             (now_tw().isoformat(), total, row["id"])
@@ -438,7 +455,7 @@ def check_broadcast_schedule_entries():
         except Exception as e:
             logger.error(f"[BcastEntry] build msg error: {e}")
         if msgs:
-            ok, total = push_to_groups(msgs)
+            ok, total, _err = push_to_groups(msgs)
             cur.execute(
                 "UPDATE broadcast_schedule_entries SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
                 (now_tw().isoformat(), total, row["id"])
@@ -663,8 +680,10 @@ def send_course_now(cid):
     if row["image_url"]:
         msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
     msgs.append({"type":"text","text":text})
-    ok, total = push_to_groups(msgs)
-    return jsonify({"ok":ok,"total":total})
+    ok, total, _err = push_to_groups(msgs)
+    resp = {"ok": ok, "total": total}
+    if _err: resp["error"] = _err
+    return jsonify(resp)
 
 @app.route("/admin/send", methods=["POST"])
 def admin_send():
@@ -676,7 +695,8 @@ def admin_send():
     if img_url: msgs.append({"type":"image","originalContentUrl":img_url,"previewImageUrl":img_url})
     if text:    msgs.append({"type":"text","text":text})
     if not msgs: return jsonify({"ok":0,"total":0})
-    ok, total = push_to_groups(msgs)
+    ok, total, _err = push_to_groups(msgs)
+
     conn = get_db(); cur = conn.cursor()
     cur.execute("INSERT INTO announcements (content,sent_at,group_count) VALUES (%s,%s,%s)",
                 (text, isonow(), total))
@@ -739,7 +759,7 @@ def send_scheduled_announcement_now(aid):
     if row["image_url"]:
         msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
     msgs.append({"type":"text","text":row["content"]})
-    ok, total = push_to_groups(msgs)
+    ok, total, _err = push_to_groups(msgs)
     cur.execute("UPDATE scheduled_announcements SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
                 (isonow(), total, aid))
     conn.commit(); cur.close(); conn.close()
@@ -838,7 +858,7 @@ def send_broadcast_entry_now(eid):
             if b["image_url"]: msgs.append({"type":"image","originalContentUrl":b["image_url"],"previewImageUrl":b["image_url"]})
             msgs.append({"type":"text","text":b["content"]})
     if not msgs: cur.close(); conn.close(); return jsonify({"ok":False,"error":"無法組建訊息"})
-    ok, total = push_to_groups(msgs)
+    ok, total, _err = push_to_groups(msgs)
     cur.execute("UPDATE broadcast_schedule_entries SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
                 (isonow(), total, eid))
     conn.commit(); cur.close(); conn.close()
@@ -924,7 +944,7 @@ def send_scheduled_now(sid):
     if row["image_url"]:
         msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
     msgs.append({"type":"text","text":row["content"]})
-    ok, total = push_to_groups(msgs)
+    ok, total, _err = push_to_groups(msgs)
     next_run = (now_tw() + timedelta(seconds=row["interval_seconds"])).isoformat()
     cur.execute("UPDATE scheduled_broadcasts SET next_run=%s WHERE id=%s", (next_run, sid))
     conn.commit(); cur.close(); conn.close()
@@ -1211,26 +1231,18 @@ def handle_text(event):
 
     if event["source"]["type"] == "group":
         gid = event["source"]["groupId"]
-        src_type = "group"
-    elif event["source"]["type"] == "room":
-        gid = event["source"]["roomId"]
-        src_type = "room"
-    else:
-        src_type = None
-        gid = None
-
-    if gid:
         conn = get_db(); cur = conn.cursor()
+        # 若群組已存在且有名稱則不重複呼叫 LINE API
         cur.execute("SELECT group_name FROM groups WHERE group_id=%s", (gid,))
         row = cur.fetchone()
         if row is None:
-            group_name = fetch_group_name(gid) if src_type == "group" else ""
+            group_name = fetch_group_name(gid)
             cur.execute("""
-                INSERT INTO groups (group_id, joined_at, group_name, group_type)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO groups (group_id, joined_at, group_name)
+                VALUES (%s, %s, %s)
                 ON CONFLICT (group_id) DO UPDATE SET group_name = EXCLUDED.group_name
-            """, (gid, isonow(), group_name, src_type))
-        elif not row["group_name"] and src_type == "group":
+            """, (gid, isonow(), group_name))
+        elif not row["group_name"]:
             group_name = fetch_group_name(gid)
             cur.execute("UPDATE groups SET group_name=%s WHERE group_id=%s", (group_name, gid))
         conn.commit(); cur.close(); conn.close()
@@ -1239,7 +1251,7 @@ def handle_text(event):
         return
 
     if text.startswith("/公告 "):
-        ok, total = push_text(f"📢 {text[4:].strip()}")
+        ok, total, _err = push_text(f"📢 {text[4:].strip()}")
         reply_message(reply_token, f"✅ 已發送到 {ok}/{total} 個群組")
 
     elif text.startswith("/新增課程 ") or text.startswith("/加課 "):
@@ -1294,35 +1306,24 @@ def handle_text(event):
             f"🌐 管理後台：\n{url}/admin")
 
 def handle_join(event):
-    src_type = event["source"]["type"]
-    if src_type == "group":
+    if event["source"]["type"] == "group":
         gid = event["source"]["groupId"]
         group_name = fetch_group_name(gid)
-    elif src_type == "room":
-        gid = event["source"]["roomId"]
-        group_name = ""   # room 無法查名稱
-    else:
-        return
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO groups (group_id, joined_at, group_name, group_type)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (group_id) DO UPDATE SET group_name = EXCLUDED.group_name
-    """, (gid, isonow(), group_name, src_type))
-    conn.commit(); cur.close(); conn.close()
-    logger.info(f"Joined ({src_type}): {gid} name={group_name!r}")
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO groups (group_id, joined_at, group_name)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (group_id) DO UPDATE SET group_name = EXCLUDED.group_name
+        """, (gid, isonow(), group_name))
+        conn.commit(); cur.close(); conn.close()
+        logger.info(f"Group joined: {gid} name={group_name!r}")
 
 def handle_leave(event):
-    src_type = event["source"]["type"]
-    if src_type == "group":
+    if event["source"]["type"] == "group":
         gid = event["source"]["groupId"]
-    elif src_type == "room":
-        gid = event["source"]["roomId"]
-    else:
-        return
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("DELETE FROM groups WHERE group_id=%s", (gid,))
-    conn.commit(); cur.close(); conn.close()
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("DELETE FROM groups WHERE group_id=%s", (gid,))
+        conn.commit(); cur.close(); conn.close()
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
