@@ -760,6 +760,19 @@ let _dpYear, _dpMonth;
 let _dpSelected = [];  // [{date:'YYYY-MM-DD', time:'HH:MM'}]
 let _dpActiveTime = '08:00';
 
+function openDatePickerById(srcType, srcId) {
+  // Look up title from cached data
+  let title = '';
+  if(srcType === 'course') {
+    const c = _courses.find(x => x.id === srcId);
+    title = c ? c.title : '';
+  } else if(srcType === 'broadcast') {
+    const s = _scheds.find(x => x.id === srcId);
+    title = s ? s.title : '';
+  }
+  openDatePicker(srcType, srcId, title);
+}
+
 function openDatePicker(srcType, srcId, title) {
   _dpSrcType = srcType;
   _dpSrcId   = srcId;
@@ -1122,7 +1135,7 @@ function renderCourses(){
       <td><div class="prog"><div class="prog-fill" style="width:${pct(c.sent_count,c.remind_count)}%"></div></div><span style="font-size:11px;color:#999">${c.sent_count||0}/${c.remind_count||0}</span></td>
       <td><div style="display:flex;gap:5px">
         <button class="btn btn-sm" onclick="sendCourseNow(${c.id})" title="立即發送"><i class="ti ti-send"></i></button>
-        <button class="btn btn-sm" onclick="openDatePicker('course',${c.id},${JSON.stringify(esc(c.title))})" title="指定日期時間發送" style="color:#1A5CC4;border-color:#B8D0F8;background:#EEF5FF"><i class="ti ti-calendar-time"></i></button>
+        <button class="btn btn-sm" onclick="openDatePickerById('course',${c.id})" title="指定日期時間發送" style="color:#1A5CC4;border-color:#B8D0F8;background:#EEF5FF"><i class="ti ti-calendar-time"></i></button>
         <button class="btn btn-sm" onclick="editCourse(${c.id})" title="編輯"><i class="ti ti-edit"></i></button>
         <button class="btn btn-sm btn-danger" onclick="deleteCourse(${c.id})" title="刪除"><i class="ti ti-trash"></i></button>
       </div></td>
@@ -1461,7 +1474,7 @@ function renderScheds(){
       </div>
       <div class="sch-actions">
         <button class="toggle ${s.active?'on':''}" onclick="toggleSched(${s.id},this)"></button>
-        <button class="btn btn-sm" style="color:#1A5CC4;border-color:#B8D0F8;background:#EEF5FF" onclick="openDatePicker('broadcast',${s.id},${JSON.stringify(esc(s.title))})" title="指定日期時間發送"><i class="ti ti-calendar-time"></i></button>
+        <button class="btn btn-sm" style="color:#1A5CC4;border-color:#B8D0F8;background:#EEF5FF" onclick="openDatePickerById('broadcast',${s.id})" title="指定日期時間發送"><i class="ti ti-calendar-time"></i></button>
         <button class="btn btn-sm" onclick="sendSchedNow(${s.id})"><i class="ti ti-send"></i></button>
         <button class="btn btn-sm btn-danger" onclick="deleteSched(${s.id})"><i class="ti ti-trash"></i></button>
       </div>
