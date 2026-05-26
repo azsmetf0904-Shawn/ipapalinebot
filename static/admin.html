@@ -1023,7 +1023,7 @@ function renderSchedAnns(){
     <div class="ann-queue-item ${a.sent?'ann-sent':''}">
       <div class="ann-queue-time">
         ${a.sent
-          ? `<span class="badge bg-green" style="font-size:11px">已發送</span><br><span style="color:#999;font-weight:400">${(a.sent_at||'').slice(0,16).replace('T',' ')}</span>`
+          ? `<span class="badge bg-green" style="font-size:11px">已發送</span><br><span style="color:#999;font-weight:400">${(a.sent_time||'').slice(0,16).replace('T',' ')}</span>`
           : `<i class="ti ti-clock" style="font-size:12px;vertical-align:-1px"></i> ${a.send_at.slice(0,16).replace('T',' ')}`}
       </div>
       <div class="ann-queue-info">
