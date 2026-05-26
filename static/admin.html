@@ -631,6 +631,7 @@ textarea{resize:vertical;min-height:72px}
     </div>
     <div class="modal-foot">
       <button class="btn" onclick="closeDatePicker()">取消</button>
+      <button class="btn" onclick="triggerReminders()" style="color:#1A5CC4;border-color:#B8D0F8" title="手動觸發排程檢查"><i class="ti ti-player-play"></i> 立即觸發</button>
       <button class="btn btn-primary" onclick="dpConfirm()"><i class="ti ti-device-floppy"></i> 儲存排程</button>
     </div>
   </div>
@@ -1506,7 +1507,7 @@ async function addScheduled(){
     image_url:      document.getElementById('s-img').value.trim(),
     interval_value: parseFloat(document.getElementById('s-iv').value)||7,
     interval_unit:  document.getElementById('s-iu').value,
-    start_time:     document.getElementById('s-start').value||new Date().toISOString(),
+    start_time:     (document.getElementById('s-start').value ? document.getElementById('s-start').value + ':00+08:00' : new Date().toISOString()),
   };
   const r = await api('/admin/scheduled',{method:'POST',body:JSON.stringify(body)});
   if(r.ok){ toast('排程已新增！','ok'); ['s-title','s-content','s-img','s-start'].forEach(id=>document.getElementById(id).value=''); loadScheduled(); }
@@ -1690,7 +1691,7 @@ async function loadSettings(){
 
 async function triggerReminders(){
   const r = await api('/admin/check-reminders',{method:'POST'});
-  if(r.ok) toast(`提醒已觸發（台灣日期：${r.tw_date}）`,'ok');
+  if(r.ok) toast(`✅ 觸發完成 ${r.tw_time} | 待發 ${r.pending_entries} 筆，本次到期 ${r.due_entries} 筆`,'ok');
   else toast('觸發失敗','err');
 }
 
