@@ -1650,9 +1650,12 @@ async function sendAnn(){
   if(!text&&!img){ toast('請輸入公告內容','err'); return; }
   const bot_key = document.getElementById('ann-bot-key').value;
   const r = await api('/admin/send',{method:'POST',body:JSON.stringify({text,image_url:img,bot_key})});
-  if(r.ok||r.ok===0){ toast(`公告已發送至 ${r.ok}/${r.total} 個群組 ✓`,'ok'); document.getElementById('ann-text').value=''; document.getElementById('ann-img').value=''; previewAnn(); }
-  if(r.error){ toast(r.error,'err'); }
-  else toast('發送失敗','err');
+  if(r.ok!=null){
+    if(r.error) toast(r.error,'err');
+    else { toast(`公告已發送至 ${r.ok}/${r.total} 個群組 ✓`,'ok'); document.getElementById('ann-text').value=''; document.getElementById('ann-img').value=''; previewAnn(); }
+  } else {
+    toast('發送失敗','err');
+  }
 }
 
 // ── Scheduled Announcements ──
