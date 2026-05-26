@@ -136,7 +136,7 @@ def init_db():
             image_url   TEXT DEFAULT '',
             send_at     TIMESTAMPTZ NOT NULL,
             sent        BOOLEAN DEFAULT FALSE,
-            sent_at     TIMESTAMPTZ,
+            sent_time   TIMESTAMPTZ,
             group_count INTEGER DEFAULT 0,
             created_at  TIMESTAMPTZ NOT NULL
         );
@@ -306,7 +306,7 @@ def check_scheduled_announcements():
         msgs.append({"type":"text","text":row["content"]})
         ok, total = push_to_groups(msgs)
         cur.execute(
-            "UPDATE scheduled_announcements SET sent=TRUE, sent_at=%s, group_count=%s WHERE id=%s",
+            "UPDATE scheduled_announcements SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
             (now_tw().isoformat(), total, row["id"])
         )
         logger.info(f"[SchedAnn] id={row['id']} sent {ok}/{total}")
@@ -564,7 +564,7 @@ def get_scheduled_announcements():
     for r in rows:
         d = dict(r)
         if d.get("send_at"): d["send_at"] = str(d["send_at"])
-        if d.get("sent_at"): d["sent_at"] = str(d["sent_at"])
+        if d.get("sent_time"): d["sent_time"] = str(d["sent_time"])
         if d.get("created_at"): d["created_at"] = str(d["created_at"])
         result.append(d)
     return jsonify({"announcements": result})
@@ -609,7 +609,7 @@ def send_scheduled_announcement_now(aid):
         msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
     msgs.append({"type":"text","text":row["content"]})
     ok, total = push_to_groups(msgs)
-    cur.execute("UPDATE scheduled_announcements SET sent=TRUE, sent_at=%s, group_count=%s WHERE id=%s",
+    cur.execute("UPDATE scheduled_announcements SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
                 (isonow(), total, aid))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok":ok,"total":total})
