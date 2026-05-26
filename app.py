@@ -64,16 +64,15 @@ def init_db():
     cur = conn.cursor()
     cur.execute("""
         CREATE TABLE IF NOT EXISTS groups (
-            group_id  TEXT PRIMARY KEY,
-            joined_at TIMESTAMPTZ NOT NULL,
-            active    BOOLEAN DEFAULT TRUE
+            group_id   TEXT PRIMARY KEY,
+            joined_at  TIMESTAMPTZ NOT NULL,
+            group_name TEXT DEFAULT '',
+            group_type TEXT DEFAULT 'general',
+            active     BOOLEAN DEFAULT TRUE
         );
-    """)
-    # migration：若舊資料表沒有 active 欄位，自動新增
-    cur.execute("""
-        ALTER TABLE groups ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE;
-    """)
-    cur.execute("""
+        ALTER TABLE groups ADD COLUMN IF NOT EXISTS group_name TEXT DEFAULT '';
+        ALTER TABLE groups ADD COLUMN IF NOT EXISTS group_type TEXT DEFAULT 'general';
+        ALTER TABLE groups ADD COLUMN IF NOT EXISTS active     BOOLEAN DEFAULT TRUE;
         CREATE TABLE IF NOT EXISTS categories (
             id         SERIAL PRIMARY KEY,
             name       TEXT NOT NULL UNIQUE,
@@ -137,7 +136,7 @@ def unit_to_seconds(value, unit: str) -> float:
 def get_all_group_ids() -> list[str]:
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT group_id FROM groups WHERE active=TRUE")
+    cur.execute("SELECT group_id FROM groups WHERE active = TRUE")
     db_groups = [r["group_id"] for r in cur.fetchall()]
     cur.close(); conn.close()
     return list(set(db_groups + DEFAULT_GROUP_IDS))
@@ -316,17 +315,40 @@ def admin_info():
 def get_groups():
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
     conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT group_id, joined_at::text, active FROM groups ORDER BY joined_at DESC")
-    rows = [dict(r) for r in cur.fetchall()]
-    cur.close(); conn.close()
-    return jsonify({"count": len(rows), "groups": rows})
+    cur.execute("SELECT group_id, joined_at, group_name, group_type, active FROM groups ORDER BY joined_at DESC")
+    rows = cur.fetchall(); cur.close(); conn.close()
+    result = []
+    for r in rows:
+        d = dict(r)
+        if d.get("joined_at"): d["joined_at"] = str(d["joined_at"])
+        result.append(d)
+    return jsonify({"count": len(result), "groups": result})
 
-@app.route("/admin/groups/<path:gid>", methods=["PUT"])
+@app.route("/admin/groups/<gid>", methods=["PUT"])
 def update_group(gid):
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    d = request.json
+    d = request.json or {}
     conn = get_db(); cur = conn.cursor()
-    cur.execute("UPDATE groups SET active=%s WHERE group_id=%s", (bool(d.get("active", True)), gid))
+    fields, vals = [], []
+    if "active" in d:
+        fields.append("active=%s"); vals.append(bool(d["active"]))
+    if "group_name" in d:
+        fields.append("group_name=%s"); vals.append(str(d["group_name"]).strip())
+    if "group_type" in d:
+        fields.append("group_type=%s"); vals.append(str(d["group_type"]).strip())
+    if not fields:
+        cur.close(); conn.close()
+        return jsonify({"ok": False, "error": "no fields to update"})
+    vals.append(gid)
+    cur.execute(f"UPDATE groups SET {', '.join(fields)} WHERE group_id=%s", vals)
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True})
+
+@app.route("/admin/groups/<gid>", methods=["DELETE"])
+def delete_group(gid):
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("DELETE FROM groups WHERE group_id=%s", (gid,))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok": True})
 
