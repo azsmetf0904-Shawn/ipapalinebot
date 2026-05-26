@@ -50,7 +50,7 @@ body{font-family:'DM Sans',system-ui,sans-serif;background:#F5F5F0;color:#1A1A1A
 
 /* Cards */
 .card{background:#fff;border:1px solid #E8E8E4;border-radius:12px;padding:18px 20px;margin-bottom:16px}
-.card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+.card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:10px;flex-wrap:nowrap}
 .card-title{font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px;color:#1A1A1A}
 .card-title i{font-size:17px;color:#999}
 
@@ -374,17 +374,21 @@ textarea{resize:vertical;min-height:72px}
           </div>
         </div>
         <div class="card">
-          <div class="card-head"><span class="card-title"><i class="ti ti-list"></i> 排程清單</span>
-            <div style="display:flex;align-items:center;gap:8px">
-              <span id="sched-count-hint" style="font-size:12px;color:#999"></span>
-              <select id="sf-sort" style="font-size:12px;padding:5px 8px" onchange="renderScheds()">
-                <option value="next_run">依下次發送時間</option>
-                <option value="title">依標題</option>
-                <option value="interval_seconds">依發送間隔</option>
-                <option value="active">依啟用狀態</option>
+          <div class="card-head">
+            <span class="card-title"><i class="ti ti-list"></i> 排程清單</span>
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap">
+              <span id="sched-count-hint" style="font-size:12px;color:#bbb;white-space:nowrap;margin-right:4px"></span>
+              <select id="sf-sort" style="font-size:12px;padding:5px 8px;border-radius:7px;border:1px solid #E0E0DC;background:#fff;color:#555;cursor:pointer;max-width:140px" onchange="renderScheds()">
+                <option value="next_run">下次發送時間</option>
+                <option value="title">標題</option>
+                <option value="interval_seconds">發送間隔</option>
+                <option value="active">啟用狀態</option>
               </select>
-              <button class="btn btn-sm" id="sf-dir-btn" onclick="toggleSchedDir()" title="切換排序方向" style="padding:5px 8px"><i class="ti ti-arrows-sort"></i> <span id="sf-dir-label">升冪</span></button>
-              <select id="sf-status" style="font-size:12px;padding:5px 8px" onchange="renderScheds()">
+              <button class="btn btn-sm" id="sf-dir-btn" onclick="toggleSchedDir()" title="切換排序方向" style="padding:5px 9px;gap:4px;flex-shrink:0">
+                <i class="ti ti-arrows-sort" style="font-size:13px"></i>
+                <span id="sf-dir-label" style="font-size:12px">升冪</span>
+              </button>
+              <select id="sf-status" style="font-size:12px;padding:5px 8px;border-radius:7px;border:1px solid #E0E0DC;background:#fff;color:#555;cursor:pointer" onchange="renderScheds()">
                 <option value="">全部</option>
                 <option value="active">啟用中</option>
                 <option value="inactive">已停用</option>
