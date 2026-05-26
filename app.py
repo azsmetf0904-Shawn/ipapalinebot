@@ -61,12 +61,16 @@ def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image
 
     body = {
         "contents": [{"parts": parts}],
-        "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.1}
+        "generationConfig": {
+            "maxOutputTokens": max_tokens,
+            "temperature": 0.1,
+            "thinkingConfig": {"thinkingBudget": 0}   # 關閉 thinking，節省 token 與時間
+        }
     }
 
     for attempt in range(1, _retry + 1):
         resp = requests.post(GEMINI_URL, headers={"Content-Type": "application/json"},
-                             json=body, timeout=30)
+                             json=body, timeout=60)
         result = resp.json()
 
         if "error" in result:
@@ -83,7 +87,12 @@ def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image
 
             raise Exception(msg)
 
-        return result["candidates"][0]["content"]["parts"][0]["text"].strip()
+        # gemini-2.5-flash 回傳的 parts 可能含 thinking，找第一個純文字 part
+        resp_parts = result["candidates"][0]["content"]["parts"]
+        text = next((p["text"] for p in resp_parts if p.get("thought") is not True and "text" in p), None)
+        if text is None:
+            raise Exception("Gemini 回傳內容無法解析")
+        return text.strip()
 
     raise Exception("Gemini API 重試次數已達上限，請稍後再試")
 
