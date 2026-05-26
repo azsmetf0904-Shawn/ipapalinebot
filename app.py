@@ -32,7 +32,6 @@ LINE_CHANNEL_SECRET      = os.environ["LINE_CHANNEL_SECRET"]
 LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 ADMIN_USER_IDS           = [x.strip() for x in os.environ.get("ADMIN_USER_IDS", "").split(",") if x.strip()]
 ADMIN_PASSWORD           = os.environ.get("ADMIN_PASSWORD", "ipapa2026")
-logger.info(f"[DEBUG] ADMIN_PASSWORD='{ADMIN_PASSWORD}'")
 DATABASE_URL             = os.environ["DATABASE_URL"]          # Railway 自動注入
 DEFAULT_GROUP_IDS        = [x.strip() for x in os.environ.get("DEFAULT_GROUP_IDS", "").split(",") if x.strip()]
 IMGBB_API_KEY            = os.environ.get("IMGBB_API_KEY", "")
@@ -241,11 +240,13 @@ def check_and_send_reminders():
 
 # ── 排程廣播（每 15 分鐘檢查） ──
 def check_scheduled_broadcasts():
-    now = isonow()
+    now = now_tw()  # aware datetime，帶台灣時區
     conn = get_db()
     cur = conn.cursor()
+    # 用 NOW() AT TIME ZONE 比對，確保時區一致
     cur.execute("SELECT * FROM scheduled_broadcasts WHERE active=TRUE AND next_run <= %s", (now,))
     rows = cur.fetchall()
+    logger.info(f"[Broadcast] Checking at {now.isoformat()}, found {len(rows)} due")
 
     for row in rows:
         msgs = []
@@ -255,7 +256,7 @@ def check_scheduled_broadcasts():
         ok, total = push_to_groups(msgs)
         next_run = (now_tw() + timedelta(seconds=row["interval_seconds"])).isoformat()
         cur.execute("UPDATE scheduled_broadcasts SET next_run=%s WHERE id=%s", (next_run, row["id"]))
-        logger.info(f"[Broadcast] '{row['title']}' sent {ok}/{total}")
+        logger.info(f"[Broadcast] '{row['title']}' sent {ok}/{total}, next_run={next_run}")
 
     conn.commit()
     cur.close(); conn.close()
