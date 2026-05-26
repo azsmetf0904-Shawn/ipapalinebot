@@ -968,22 +968,25 @@ async function dpDeleteEntry(eid) {
 
 async function dpConfirm() {
   if(!_dpSelected.length){ toast('請至少選擇一個日期','err'); return; }
-  // Build ISO datetimes (treat as Taiwan time = UTC+8)
+  // Build ISO datetime strings as Taiwan local time (backend stores as-is with fromisoformat)
+  // Format: "YYYY-MM-DDTHH:MM:SS" — server treats this as TW time directly
   const send_ats = _dpSelected.map(({date, time}) => {
-    // Convert TW time to UTC ISO
-    const [h, mi] = time.split(':').map(Number);
-    const [y, mo, d] = date.split('-').map(Number);
-    const utcMs = Date.UTC(y, mo-1, d, h-8, mi); // subtract +8 offset
-    return new Date(utcMs).toISOString();
+    return date + 'T' + time + ':00';
   });
   const body = {source_type: _dpSrcType, source_id: _dpSrcId, send_ats};
-  const r = await api('/admin/broadcast-entries',{method:'POST', body:JSON.stringify(body)});
-  if(r.ok){
-    toast(`已新增 ${r.added} 個排程 ✓`, 'ok');
-    closeDatePicker();
-    if(_dpSrcType === 'course') loadCourses();
-    if(_dpSrcType === 'broadcast') loadScheduled();
-  } else toast(r.error||'新增失敗','err');
+  try {
+    const r = await api('/admin/broadcast-entries', {method:'POST', body:JSON.stringify(body)});
+    if(r.ok || r.added > 0){
+      toast(`已新增 ${r.added||send_ats.length} 個排程 ✓`, 'ok');
+      closeDatePicker();
+      if(_dpSrcType === 'course') loadCourses();
+      if(_dpSrcType === 'broadcast') loadScheduled();
+    } else {
+      toast(r.error||'新增失敗，請重試','err');
+    }
+  } catch(e) {
+    toast('發生錯誤：'+e.message,'err');
+  }
 }
 
 // ── Dashboard ──
