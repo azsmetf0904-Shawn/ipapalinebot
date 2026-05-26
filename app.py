@@ -473,6 +473,47 @@ def init_db_route():
     init_db()
     return "DB initialized OK"
 
+@app.route("/admin/line-diagnose", methods=["POST"])
+def line_diagnose():
+    """診斷 LINE Bot 推播能力：驗證 Token、測試推播"""
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    results = {}
+
+    # 1. 驗證 Token
+    try:
+        vr = requests.get("https://api.line.me/v2/bot/info", headers=HEADERS, timeout=8)
+        if vr.status_code == 200:
+            bot_info = vr.json()
+            results["token"] = "ok"
+            results["bot_name"] = bot_info.get("displayName","")
+            results["bot_id"] = bot_info.get("userId","")
+        else:
+            results["token"] = f"error {vr.status_code}: {vr.text[:200]}"
+    except Exception as e:
+        results["token"] = f"exception: {e}"
+
+    # 2. 列出群組及推播狀態
+    groups = get_all_group_ids()
+    results["group_count"] = len(groups)
+    group_results = []
+    for gid in groups:
+        try:
+            pr = requests.post("https://api.line.me/v2/bot/message/push", headers=HEADERS,
+                json={"to": gid, "messages": [{"type":"text","text":"🔧 LINE 推播診斷測試（可忽略此訊息）"}]}, timeout=10)
+            if pr.status_code == 200:
+                group_results.append({"gid": gid[:20], "status": "ok"})
+            else:
+                try:
+                    err = pr.json()
+                except Exception:
+                    err = pr.text[:200]
+                group_results.append({"gid": gid[:20], "status": f"error {pr.status_code}", "detail": err})
+        except Exception as e:
+            group_results.append({"gid": gid[:20], "status": f"exception: {e}"})
+    results["groups"] = group_results
+
+    return jsonify(results)
+
 # ── Admin API ──
 
 @app.route("/admin/info", methods=["GET"])
