@@ -62,7 +62,7 @@ def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image
     body = {
         "contents": [{"parts": parts}],
         "generationConfig": {
-            "maxOutputTokens": max_tokens,
+            "maxOutputTokens": 2048,
             "temperature": 0.1,
             "thinkingConfig": {"thinkingBudget": 0}   # 關閉 thinking，節省 token 與時間
         }
