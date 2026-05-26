@@ -814,11 +814,7 @@ def add_scheduled():
     interval_seconds = unit_to_seconds(iv, iu)
     start_time = d.get("start_time","")
     try:
-        dt = datetime.fromisoformat(start_time)
-        # 若為 naive datetime（前端送台灣本地時間），補上台灣時區
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=TZ)
-        next_run = dt.isoformat()
+        next_run = datetime.fromisoformat(start_time).isoformat()
     except Exception:
         next_run = isonow()
     conn = get_db(); cur = conn.cursor()
@@ -924,6 +920,89 @@ def ai_parse_course():
         return jsonify({"ok":True,"course":c})
     except Exception as e:
         logger.error(f"AI parse error: {e}")
+        return jsonify({"ok":False,"error":str(e)})
+
+@app.route("/admin/ai-parse-broadcast", methods=["POST"])
+def ai_parse_broadcast():
+    """AI 解析圖片或文字，自動生成排程廣播內容與提醒設定"""
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    text = ""
+    image_b64 = ""
+    image_media_type = "image/jpeg"
+    image_url = ""
+
+    if request.content_type and "multipart" in request.content_type:
+        text = request.form.get("text","").strip()
+        if "image" in request.files:
+            f = request.files["image"]
+            image_b64 = base64.b64encode(f.read()).decode()
+            image_media_type = f.content_type or "image/jpeg"
+    else:
+        data = request.get_json() or {}
+        text = data.get("text","").strip()
+        image_b64 = data.get("image_b64","").strip()
+        image_url = data.get("image_url","").strip()
+        image_media_type = data.get("image_media_type","image/jpeg")
+
+    if not text and not image_b64 and not image_url:
+        return jsonify({"ok":False,"error":"請輸入描述或上傳圖片"})
+
+    today = today_tw().isoformat()
+    prompt = (
+        f"今天是 {today}（台灣時間）。請從圖片或文字中提取活動/廣播資訊，只回傳 JSON，不要任何其他文字：\n"
+        f'{{"title":"活動或廣播的標題","content":"推播給群組的完整廣播內容（請寫得清楚完整，包含時間地點等重要資訊）",'
+        f'"event_date":"YYYY-MM-DD（活動日期，若無則留空字串）",'
+        f'"event_time":"HH:MM（活動時間，若無則留空字串）",'
+        f'"remind_days_before":30,"remind_interval_days":7,'
+        f'"interval_value":1,"interval_unit":"days",'
+        f'"start_time":"YYYY-MM-DDTHH:MM（第一次發送時間，若有活動日期則自動往前推 remind_days_before 天，若無活動日期則填今天）"}}\n'
+        f'說明：\n'
+        f'- remind_days_before：提前幾天開始提醒（若用戶有指定就用，否則預設 30）\n'
+        f'- remind_interval_days：每幾天提醒一次（若用戶有指定就用，否則預設 7）\n'
+        f'- interval_value + interval_unit：排程發送間隔（和 remind_interval_days 對應，unit 固定填 "days"）\n'
+        f'- start_time：第一次發送時間，格式 YYYY-MM-DDTHH:MM，根據 event_date 往前推 remind_days_before 天計算\n'
+        f'- content 要包含完整資訊，可以加上 emoji 讓訊息更生動\n'
+        f'相對日期（例如「下週五」）請根據今天 {today} 計算。\n'
+        f'用戶輸入：{text}'
+    )
+
+    try:
+        msg_content = []
+        if image_b64:
+            msg_content.append({"type":"image","source":{"type":"base64","media_type":image_media_type,"data":image_b64}})
+        elif image_url:
+            msg_content.append({"type":"image","source":{"type":"url","url":image_url}})
+        msg_content.append({"type":"text","text":prompt})
+
+        resp = requests.post("https://api.anthropic.com/v1/messages",
+            headers={"Content-Type":"application/json"},
+            json={"model":"claude-sonnet-4-20250514","max_tokens":800,
+                  "messages":[{"role":"user","content":msg_content}]}, timeout=30)
+        result = resp.json()
+        if "error" in result:
+            return jsonify({"ok":False,"error":result["error"].get("message","API錯誤")})
+        ai_text = result["content"][0]["text"].strip()
+        if "```" in ai_text:
+            ai_text = ai_text.split("```")[1]
+            if ai_text.startswith("json"): ai_text = ai_text[4:]
+        c = json.loads(ai_text.strip())
+
+        # 確保 start_time 帶台灣時區
+        st = c.get("start_time","")
+        if st:
+            try:
+                dt = datetime.fromisoformat(st)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=TZ)
+                c["start_time"] = dt.isoformat()
+            except Exception:
+                c["start_time"] = isonow()
+        else:
+            c["start_time"] = isonow()
+
+        return jsonify({"ok":True,"broadcast":c})
+    except Exception as e:
+        logger.error(f"AI parse broadcast error: {e}")
         return jsonify({"ok":False,"error":str(e)})
 
 @app.route("/admin/check-reminders", methods=["POST"])
