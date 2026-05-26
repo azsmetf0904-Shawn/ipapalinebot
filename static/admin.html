@@ -307,6 +307,10 @@ textarea{resize:vertical;min-height:72px}
             <div class="fg"><label>地點</label><input id="c-loc" placeholder="地點（選填）"></div>
             <div class="fg span2"><label>說明</label><textarea id="c-desc" placeholder="課程說明（選填）"></textarea></div>
             <div class="fg span2"><label>圖片網址</label><input id="c-img" placeholder="https://...（選填）"></div>
+            <div class="fg span2">
+              <label style="display:flex;align-items:center;gap:6px"><i class="ti ti-robot" style="font-size:14px;color:#999"></i>使用機器人</label>
+              <select id="c-bot-key"><option value="">載入中...</option></select>
+            </div>
           </div>
           <div class="sep"></div>
           <div style="font-size:12px;color:#666;font-weight:500;margin-bottom:10px">🔔 提醒設定</div>
@@ -550,6 +554,7 @@ textarea{resize:vertical;min-height:72px}
                 <th>群組名稱</th>
                 <th>Group ID</th>
                 <th>群組類型</th>
+                <th>綁定機器人</th>
                 <th>加入時間</th>
                 <th style="width:80px;text-align:center">發送</th>
                 <th style="width:60px"></th>
@@ -590,9 +595,11 @@ textarea{resize:vertical;min-height:72px}
                 <option value="合作夥伴">
               </datalist>
             </div>
-            <div class="fg">
-              <label>綁定機器人 <span style="font-size:11px;color:#999">（此群組使用哪個帳號發送）</span></label>
-              <select id="ge-bot-key"><option value="">（請選擇機器人）</option></select>
+            <div class="fg span2">
+              <label>綁定機器人 <span style="font-size:11px;color:#999">（勾選此群組要接收哪些機器人的廣播）</span></label>
+              <div id="ge-bot-checks" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px;padding:10px 12px;background:#F5F5F0;border:1px solid #E0E0DC;border-radius:8px;min-height:42px">
+                <span style="color:#999;font-size:12px">載入中...</span>
+              </div>
             </div>
           </div>
           <div style="display:flex;justify-content:flex-end;margin-top:8px">
@@ -797,7 +804,7 @@ function go(id, btn){
   document.getElementById('page-title').textContent = titles[id]||id;
   if(btn) btn.classList.add('active');
   else { const btns=[...document.querySelectorAll('.nav-item')]; const b=btns.find(b=>b.onclick&&b.onclick.toString().includes("'"+id+"'")); if(b)b.classList.add('active'); }
-  if(id==='courses') loadCourses(), loadCategories();
+  if(id==='courses') loadCourses(), loadCategories(), loadBots();
   if(id==='dashboard') loadBots();
 loadDashboard();
   if(id==='scheduled') loadScheduled();
@@ -1079,10 +1086,13 @@ async function loadBots(){
   const opts = _bots.length
     ? _bots.map(b=>`<option value="${b.key}">${b.name}（${b.group_count} 群組）</option>`).join('')
     : '<option value="">（尚未設定機器人）</option>';
-  ['ann-bot-key','sann-bot-key','s-bot-key'].forEach(id=>{
+  ['ann-bot-key','sann-bot-key','s-bot-key','c-bot-key'].forEach(id=>{
     const el = document.getElementById(id);
-    if(el) el.innerHTML = opts;
+    if(el) el.innerHTML = '<option value="">— 全部群組 —</option>' + opts;
   });
+  // 更新群組編輯卡片的機器人勾選區（若已開啟）
+  const openGid = document.getElementById('ge-gid')?.value;
+  if(openGid) _renderBotChecks(openGid);
 }
 
 // ── Dashboard ──
@@ -1258,6 +1268,7 @@ function editCourse(id){
   document.getElementById('c-ru').value    = c.remind_unit||'days';
   document.getElementById('c-iv').value    = c.remind_interval_value||7;
   document.getElementById('c-iu').value    = c.remind_interval_unit||'days';
+  document.getElementById('c-bot-key').value = c.bot_key||'';
   document.getElementById('cancel-edit-btn').style.display='';
   window.scrollTo({top:0,behavior:'smooth'});
 }
@@ -1272,6 +1283,7 @@ function clearCourseForm(){
   document.getElementById('c-ru').value='days';
   document.getElementById('c-iv').value=7;
   document.getElementById('c-iu').value='days';
+  document.getElementById('c-bot-key').value='';
   document.getElementById('cancel-edit-btn').style.display='none';
 }
 
@@ -1287,6 +1299,7 @@ async function saveCourse(){
     location:    document.getElementById('c-loc').value,
     description: document.getElementById('c-desc').value,
     image_url:   document.getElementById('c-img').value,
+    bot_key:     document.getElementById('c-bot-key').value,
     remind_value: parseInt(document.getElementById('c-rv').value)||30,
     remind_unit:  document.getElementById('c-ru').value,
     remind_interval_value: parseInt(document.getElementById('c-iv').value)||7,
@@ -1861,6 +1874,10 @@ function renderGroups(){
   tbody.innerHTML = _groups.length ? _groups.map(g=>{
     const typeLabel = esc(g.group_type||'一般');
     const name = esc(g.group_name||'（未命名）');
+    const bot = _bots.find(b=>b.key===g.bot_key);
+    const botBadge = bot
+      ? `<span class="badge bg-green" style="font-size:10px"><i class="ti ti-robot" style="font-size:10px;margin-right:2px"></i>${esc(bot.name)}</span>`
+      : `<span class="badge bg-gray" style="font-size:10px">不指定</span>`;
     return `<tr id="grow-${esc(g.group_id)}">
       <td><div style="width:8px;height:8px;border-radius:50%;background:${g.active?'#06C755':'#CCC'};margin:0 auto"></div></td>
       <td>
@@ -1868,6 +1885,7 @@ function renderGroups(){
       </td>
       <td style="font-family:monospace;font-size:11px;color:#999;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(g.group_id)}">${esc(g.group_id)}</td>
       <td><span class="badge bg-gray" style="font-size:11px">${typeLabel}</span></td>
+      <td>${botBadge}</td>
       <td style="font-size:12px;color:#999;white-space:nowrap">${g.joined_at?g.joined_at.slice(0,16).replace('T',' '):'—'}</td>
       <td style="text-align:center"><button class="toggle ${g.active?'on':''}" onclick="toggleGroup('${esc(g.group_id)}',this)"></button></td>
       <td>
@@ -1877,7 +1895,37 @@ function renderGroups(){
         </div>
       </td>
     </tr>`;
-  }).join('') : '<tr><td colspan="7" style="text-align:center;color:#999;padding:24px">尚無群組，將機器人加入 LINE 群組後會自動出現</td></tr>';
+  }).join('') : '<tr><td colspan="8" style="text-align:center;color:#999;padding:24px">尚無群組，將機器人加入 LINE 群組後會自動出現</td></tr>';
+}
+
+function _renderBotChecks(gid){
+  const g = _groups.find(x=>x.group_id===gid);
+  const currentBotKey = g ? (g.bot_key||'') : '';
+  const container = document.getElementById('ge-bot-checks');
+  if(!container) return;
+  if(!_bots.length){
+    container.innerHTML = '<span style="color:#999;font-size:12px">尚未設定機器人</span>';
+    return;
+  }
+  container.innerHTML = _bots.map(b=>`
+    <label style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:#fff;border:1px solid ${currentBotKey===b.key?'#06C755':'#E0E0DC'};border-radius:20px;cursor:pointer;font-size:12px;color:#1A1A1A;transition:all .15s" id="botlbl-${b.key}">
+      <input type="radio" name="ge-bot-radio" value="${b.key}" ${currentBotKey===b.key?'checked':''} style="accent-color:#06C755;width:13px;height:13px" onchange="updateBotLabelStyle()">
+      <i class="ti ti-robot" style="font-size:13px;color:#06A847"></i>${esc(b.name)}
+      <span style="font-size:10px;color:#999">（${b.group_count} 群）</span>
+    </label>
+  `).join('') + `
+    <label style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:#fff;border:1px solid ${currentBotKey===''?'#06C755':'#E0E0DC'};border-radius:20px;cursor:pointer;font-size:12px;color:#666;transition:all .15s" id="botlbl-">
+      <input type="radio" name="ge-bot-radio" value="" ${currentBotKey===''?'checked':''} style="accent-color:#06C755;width:13px;height:13px" onchange="updateBotLabelStyle()">
+      不指定
+    </label>`;
+}
+
+function updateBotLabelStyle(){
+  const radios = document.querySelectorAll('input[name="ge-bot-radio"]');
+  radios.forEach(r=>{
+    const lbl = document.getElementById('botlbl-'+r.value);
+    if(lbl) lbl.style.borderColor = r.checked ? '#06C755' : '#E0E0DC';
+  });
 }
 
 function openGroupEdit(gid){
@@ -1885,6 +1933,7 @@ function openGroupEdit(gid){
   document.getElementById('ge-gid').value  = gid;
   document.getElementById('ge-name').value = g.group_name||'';
   document.getElementById('ge-type').value = g.group_type||'';
+  _renderBotChecks(gid);
   const card = document.getElementById('group-edit-card');
   card.style.display='block';
   card.scrollIntoView({behavior:'smooth',block:'nearest'});
@@ -1898,8 +1947,10 @@ async function saveGroupEdit(){
   const gid  = document.getElementById('ge-gid').value;
   const name = document.getElementById('ge-name').value.trim();
   const type = document.getElementById('ge-type').value.trim();
+  const radioEl = document.querySelector('input[name="ge-bot-radio"]:checked');
+  const botKey = radioEl ? radioEl.value : '';
   const r = await api(`/admin/groups/${encodeURIComponent(gid)}`,{
-    method:'PUT', body:JSON.stringify({group_name:name, group_type:type, bot_key:document.getElementById('ge-bot-key').value})
+    method:'PUT', body:JSON.stringify({group_name:name, group_type:type, bot_key:botKey})
   });
   if(r.ok){ toast('群組資訊已更新','ok'); closeGroupEdit(); loadGroups(); }
   else toast(r.error||'更新失敗','err');
