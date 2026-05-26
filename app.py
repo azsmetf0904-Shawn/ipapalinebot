@@ -946,23 +946,129 @@ def ai_parse_course():
         return jsonify({"ok":False,"error":"請輸入課程描述或上傳圖片"})
 
     today = today_tw().isoformat()
-    prompt = (f"今天是 {today}（台灣時間）。請從圖片或文字中提取課程資訊，只回傳 JSON，不要任何其他文字：\n"
-              f'{{"title":"課程名稱","course_date":"YYYY-MM-DD","course_time":"HH:MM",'
-              f'"location":"地點或空字串","description":"說明或空字串",'
-              f'"remind_value":30,"remind_unit":"days","remind_interval_value":7,"remind_interval_unit":"days"}}\n'
-              f'相對日期（例如「下週五」）請根據今天 {today} 計算實際日期。\n'
-              f'用戶輸入：{text}')
+    prompt = (
+        f"今天是 {today}（台灣時間）。請從圖片或文字中提取課程資訊。\n"
+        f"重要規則：\n"
+        f"- 若圖片或文字中有多個活動，請選擇用戶文字指定的那個；若未指定則選第一個未過期的活動。\n"
+        f"- 只回傳一個 JSON 物件，不要任何其他文字、說明或 markdown。\n"
+        f"- 相對日期（例如「下週五」）請根據今天 {today} 計算實際日期。\n"
+        f"- 若圖片中有多個活動但用戶有在文字中指定某個活動名稱，優先選那個。\n"
+        f"JSON 格式如下（直接輸出，不加任何前綴）：\n"
+        f'{{"title":"課程或活動名稱","course_date":"YYYY-MM-DD","course_time":"HH:MM",'
+        f'"location":"地點或空字串","description":"說明或空字串",'
+        f'"remind_value":30,"remind_unit":"days","remind_interval_value":7,"remind_interval_unit":"days"}}\n'
+        f'用戶輸入：{text}'
+    )
     try:
         ai_text = gemini_call(prompt, image_b64=image_b64,
                               image_media_type=image_media_type,
                               image_url=image_url, max_tokens=600)
+        # 清除 markdown code block
         if "```" in ai_text:
             ai_text = ai_text.split("```")[1]
             if ai_text.startswith("json"): ai_text = ai_text[4:]
-        c = json.loads(ai_text.strip())
+        # 擷取第一個完整 JSON 物件
+        start = ai_text.find("{")
+        end   = ai_text.rfind("}") + 1
+        if start == -1 or end == 0:
+            raise Exception("AI 未回傳有效 JSON")
+        c = json.loads(ai_text[start:end].strip())
         return jsonify({"ok":True,"course":c})
     except Exception as e:
         logger.error(f"AI parse error: {e}")
+        return jsonify({"ok":False,"error":str(e)})
+
+
+@app.route("/admin/ai-parse-multi", methods=["POST"])
+def ai_parse_multi():
+    """AI 解析圖片或文字中的所有活動，批次新增為課程"""
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    text = ""
+    image_b64 = ""
+    image_media_type = "image/jpeg"
+
+    if request.content_type and "multipart" in request.content_type:
+        text = request.form.get("text","").strip()
+        if "image" in request.files:
+            f = request.files["image"]
+            image_b64 = base64.b64encode(f.read()).decode()
+            image_media_type = f.content_type or "image/jpeg"
+    else:
+        data = request.get_json() or {}
+        text = data.get("text","").strip()
+        image_b64 = data.get("image_b64","").strip()
+        image_media_type = data.get("image_media_type","image/jpeg")
+
+    if not text and not image_b64:
+        return jsonify({"ok":False,"error":"請輸入描述或上傳圖片"})
+
+    today = today_tw().isoformat()
+    prompt = (
+        f"今天是 {today}（台灣時間）。請從圖片或文字中提取所有活動/課程資訊。\n"
+        f"重要規則：\n"
+        f"- 找出圖片或文字中的每一個活動，全部列出，不要遺漏。\n"
+        f"- 只回傳一個 JSON 陣列，不要任何其他文字、說明或 markdown。\n"
+        f"- 相對日期請根據今天 {today} 計算實際日期。\n"
+        f"- 若某個活動沒有明確時間，course_time 填 '09:00'。\n"
+        f"- 若某個活動沒有明確地點，location 填空字串。\n"
+        f"JSON 格式（陣列，每個活動一個物件）：\n"
+        f'[{{"title":"活動名稱","course_date":"YYYY-MM-DD","course_time":"HH:MM",'
+        f'"location":"地點或空字串","description":"說明或空字串",'
+        f'"remind_value":30,"remind_unit":"days","remind_interval_value":7,"remind_interval_unit":"days"}}]\n'
+        f'用戶輸入：{text}'
+    )
+
+    try:
+        ai_text = gemini_call(prompt, image_b64=image_b64,
+                              image_media_type=image_media_type, max_tokens=2048)
+        # 清除 markdown
+        if "```" in ai_text:
+            ai_text = ai_text.split("```")[1]
+            if ai_text.startswith("json"): ai_text = ai_text[4:]
+        # 擷取 JSON 陣列
+        start = ai_text.find("[")
+        end   = ai_text.rfind("]") + 1
+        if start == -1 or end == 0:
+            raise Exception("AI 未回傳有效 JSON 陣列")
+        courses = json.loads(ai_text[start:end].strip())
+        if not isinstance(courses, list) or len(courses) == 0:
+            raise Exception("AI 未解析出任何活動")
+
+        # 批次新增課程
+        saved = []
+        errors = []
+        conn = get_db(); cur = conn.cursor()
+        for c in courses:
+            try:
+                title       = str(c.get("title","")).strip()
+                course_date = str(c.get("course_date","")).replace("/","-").strip()
+                if not title or not course_date:
+                    errors.append(f"略過：{c}")
+                    continue
+                rv = int(c.get("remind_value", 30))
+                ru = c.get("remind_unit", "days")
+                iv = int(c.get("remind_interval_value", 7))
+                iu = c.get("remind_interval_unit", "days")
+                cur.execute("""
+                    INSERT INTO courses
+                      (category_id,title,course_date,course_time,location,description,image_url,
+                       remind_value,remind_unit,remind_interval_value,remind_interval_unit,created_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,'',  %s,%s,%s,%s,%s) RETURNING id
+                """, (None, title, course_date, c.get("course_time","09:00"),
+                      c.get("location",""), c.get("description",""),
+                      rv, ru, iv, iu, isonow()))
+                cid = cur.fetchone()["id"]
+                dates = generate_reminders(cid, course_date, rv, ru, iv, iu)
+                saved.append({"id": cid, "title": title, "course_date": course_date,
+                              "remind_count": len(dates)})
+            except Exception as ce:
+                errors.append(f"{c.get('title','?')}：{str(ce)[:60]}")
+        conn.commit(); cur.close(); conn.close()
+
+        return jsonify({"ok": True, "saved": saved, "errors": errors,
+                        "total": len(courses), "saved_count": len(saved)})
+    except Exception as e:
+        logger.error(f"AI parse multi error: {e}")
         return jsonify({"ok":False,"error":str(e)})
 
 
