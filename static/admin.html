@@ -472,7 +472,11 @@ textarea{resize:vertical;min-height:72px}
           </div>
         </div>
         <div class="card">
-          <div class="card-head"><span class="card-title"><i class="ti ti-plus"></i> 新增排程廣播</span></div>
+          <div class="card-head">
+            <span class="card-title" id="s-form-title"><i class="ti ti-plus"></i> 新增排程廣播</span>
+            <button class="btn btn-sm" id="s-cancel-btn" onclick="clearSchedForm()" style="display:none">取消編輯</button>
+          </div>
+          <input type="hidden" id="edit-sched-id">
           <div class="bot-select"><i class="ti ti-robot" aria-hidden="true"></i><label>使用機器人</label><select id="s-bot-key"><option value="">載入中...</option></select></div>
           <div class="grid2">
             <div class="fg"><label>標題（內部識別）</label><input id="s-title" placeholder="例：每週業績提醒"></div>
@@ -487,7 +491,7 @@ textarea{resize:vertical;min-height:72px}
             </div>
           </div>
           <div style="display:flex;justify-content:flex-end;margin-top:14px">
-            <button class="btn btn-primary" onclick="addScheduled()"><i class="ti ti-device-floppy"></i> 儲存排程</button>
+            <button class="btn btn-primary" id="s-save-btn" onclick="saveScheduled()"><i class="ti ti-device-floppy"></i> 儲存排程</button>
           </div>
         </div>
         <div class="card">
@@ -1789,13 +1793,57 @@ function renderScheds(){
       <div class="sch-actions">
         <button class="toggle ${s.active?'on':''}" onclick="toggleSched(${s.id},this)"></button>
         <button class="btn btn-sm" style="color:#1A5CC4;border-color:#B8D0F8;background:#EEF5FF" onclick="openDatePickerById('broadcast',${s.id})" title="指定日期時間發送"><i class="ti ti-calendar-time"></i></button>
+        <button class="btn btn-sm" style="color:#555;border-color:#ddd" onclick="editSched(${s.id})" title="編輯排程"><i class="ti ti-pencil"></i></button>
         <button class="btn btn-sm" onclick="sendSchedNow(${s.id})"><i class="ti ti-send"></i></button>
         <button class="btn btn-sm btn-danger" onclick="deleteSched(${s.id})"><i class="ti ti-trash"></i></button>
       </div>
     </div>`).join('') : `<div style="text-align:center;color:#999;padding:24px">${_scheds.length?'沒有符合條件的排程':'尚無排程廣播'}</div>`;
 }
 
-async function addScheduled(){
+function clearSchedForm(){
+  document.getElementById('edit-sched-id').value = '';
+  document.getElementById('s-form-title').innerHTML = '<i class="ti ti-plus"></i> 新增排程廣播';
+  document.getElementById('s-save-btn').innerHTML = '<i class="ti ti-device-floppy"></i> 儲存排程';
+  document.getElementById('s-cancel-btn').style.display = 'none';
+  ['s-title','s-content','s-img','s-start'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('s-iv').value = '7';
+  document.getElementById('s-iu').value = 'days';
+  document.getElementById('s-bot-key').value = '';
+}
+
+function editSched(id){
+  const s = _scheds.find(x => x.id === id);
+  if(!s){ toast('找不到排程資料','err'); return; }
+  document.getElementById('edit-sched-id').value = id;
+  document.getElementById('s-title').value   = s.title || '';
+  document.getElementById('s-content').value = s.content || '';
+  document.getElementById('s-img').value     = s.image_url || '';
+  document.getElementById('s-bot-key').value = s.bot_key || '';
+  // Convert interval_seconds back to value+unit
+  const secs = s.interval_seconds || 0;
+  let iv = secs, iu = 'days';
+  if(secs % 2592000 === 0 && secs >= 2592000){ iv = secs/2592000; iu = 'months'; }
+  else if(secs % 604800 === 0 && secs >= 604800){ iv = secs/604800; iu = 'weeks'; }
+  else if(secs % 86400 === 0 && secs >= 86400){ iv = secs/86400; iu = 'days'; }
+  else if(secs % 3600 === 0 && secs >= 3600){ iv = secs/3600; iu = 'hours'; }
+  document.getElementById('s-iv').value = iv;
+  document.getElementById('s-iu').value = iu;
+  // next_run as datetime-local
+  if(s.next_run){
+    try{
+      const d = new Date(s.next_run);
+      document.getElementById('s-start').value = d.toLocaleString('sv',{timeZone:'Asia/Taipei'}).slice(0,16);
+    } catch(e){}
+  }
+  document.getElementById('s-form-title').innerHTML = '<i class="ti ti-pencil"></i> 編輯排程廣播';
+  document.getElementById('s-save-btn').innerHTML = '<i class="ti ti-device-floppy"></i> 更新排程';
+  document.getElementById('s-cancel-btn').style.display = '';
+  // Scroll to form
+  document.querySelector('#panel-scheduled .card').scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+async function saveScheduled(){
+  const sid     = document.getElementById('edit-sched-id').value;
   const title   = document.getElementById('s-title').value.trim();
   const content = document.getElementById('s-content').value.trim();
   if(!title||!content){ toast('請填寫標題和內容','err'); return; }
@@ -1807,10 +1855,18 @@ async function addScheduled(){
     interval_unit:  document.getElementById('s-iu').value,
     start_time:     (document.getElementById('s-start').value ? document.getElementById('s-start').value + ':00+08:00' : new Date().toISOString()),
   };
-  const r = await api('/admin/scheduled',{method:'POST',body:JSON.stringify(body)});
-  if(r.ok){ toast('排程已新增！','ok'); ['s-title','s-content','s-img','s-start'].forEach(id=>document.getElementById(id).value=''); loadScheduled(); }
-  else toast(r.error||'新增失敗','err');
+  const isEdit = !!sid;
+  const r = await api(isEdit ? `/admin/scheduled/${sid}` : '/admin/scheduled',
+                      {method: isEdit ? 'PUT' : 'POST', body: JSON.stringify(body)});
+  if(r.ok){
+    toast(isEdit ? '排程已更新！' : '排程已新增！', 'ok');
+    clearSchedForm();
+    loadScheduled();
+  } else toast(r.error||'儲存失敗','err');
 }
+
+// Keep old name as alias for AI autofill compatibility
+async function addScheduled(){ await saveScheduled(); }
 
 async function toggleSched(id, btn){
   const on = btn.classList.toggle('on');
