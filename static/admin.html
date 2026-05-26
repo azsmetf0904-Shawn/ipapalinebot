@@ -425,11 +425,12 @@ async function loadDashboard(){
   _courses = ci.courses||[];
   _scheds  = si.schedules||[];
   const groups = gi.groups||[];
+  const activeGroups = groups.filter(g=>g.active);
 
   document.getElementById('st-courses').textContent = _courses.length;
-  document.getElementById('st-groups').textContent  = groups.length;
-  document.getElementById('sidebar-groups').textContent = groups.length+' 個';
-  document.getElementById('broadcast-group-hint').textContent = '將推播至 '+groups.length+' 個群組';
+  document.getElementById('st-groups').textContent  = activeGroups.length;
+  document.getElementById('sidebar-groups').textContent = activeGroups.length+' 個';
+  document.getElementById('broadcast-group-hint').textContent = '將推播至 '+activeGroups.length+' 個群組';
 
   const activeS = _scheds.filter(s=>s.active).length;
   document.getElementById('st-sched').textContent = _scheds.length;
