@@ -140,6 +140,16 @@ def init_db():
             group_count INTEGER DEFAULT 0,
             created_at  TIMESTAMPTZ NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS broadcast_schedule_entries (
+            id           SERIAL PRIMARY KEY,
+            source_type  TEXT NOT NULL,
+            source_id    INTEGER NOT NULL,
+            send_at      TIMESTAMPTZ NOT NULL,
+            sent         BOOLEAN DEFAULT FALSE,
+            sent_time    TIMESTAMPTZ,
+            group_count  INTEGER DEFAULT 0,
+            created_at   TIMESTAMPTZ NOT NULL
+        );
     """)
     # 預設分類
     for name, color in [("招商活動","#FF6B35"),("系統會議","#1A73E8"),("課程培訓","#06C755"),("其他","#9E9E9E")]:
@@ -319,6 +329,61 @@ scheduler.add_job(check_scheduled_broadcasts, "interval", minutes=15,
                   id="sched_broadcast", replace_existing=True)
 scheduler.add_job(check_scheduled_announcements, "interval", minutes=5,
                   id="sched_announce", replace_existing=True)
+
+# ── 指定日期時間發送排程（broadcast_schedule_entries）──
+def check_broadcast_schedule_entries():
+    now = now_tw()
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT * FROM broadcast_schedule_entries WHERE sent=FALSE AND send_at <= %s", (now,))
+    rows = cur.fetchall()
+    if rows:
+        logger.info(f"[BcastEntry] {len(rows)} entries due at {now.isoformat()}")
+    for row in rows:
+        src_type = row["source_type"]
+        src_id   = row["source_id"]
+        msgs = []
+        try:
+            if src_type == "course":
+                cur2 = conn.cursor()
+                cur2.execute("""
+                    SELECT c.*, cat.name AS category_name FROM courses c
+                    LEFT JOIN categories cat ON c.category_id=cat.id WHERE c.id=%s
+                """, (src_id,))
+                c = cur2.fetchone(); cur2.close()
+                if c:
+                    cd = datetime.strptime(str(c["course_date"]), "%Y-%m-%d").date()
+                    days_left = (cd - today_tw()).days
+                    timing = "【今天上課】" if days_left==0 else f"【還有 {days_left} 天】" if days_left>0 else "【已結束】"
+                    cat = f"[{c['category_name']}] " if c["category_name"] else ""
+                    text = (f"📚 課程提醒 {timing}\n━━━━━━━━━━━━\n"
+                            f"{cat}📌 {c['title']}\n"
+                            f"📅 {c['course_date']} {c['course_time']}")
+                    if c["location"]:    text += f"\n📍 {c['location']}"
+                    if c["description"]: text += f"\n📝 {c['description']}"
+                    if c["image_url"]:
+                        msgs.append({"type":"image","originalContentUrl":c["image_url"],"previewImageUrl":c["image_url"]})
+                    msgs.append({"type":"text","text":text})
+            elif src_type == "broadcast":
+                cur2 = conn.cursor()
+                cur2.execute("SELECT * FROM scheduled_broadcasts WHERE id=%s", (src_id,))
+                b = cur2.fetchone(); cur2.close()
+                if b:
+                    if b["image_url"]:
+                        msgs.append({"type":"image","originalContentUrl":b["image_url"],"previewImageUrl":b["image_url"]})
+                    msgs.append({"type":"text","text":b["content"]})
+        except Exception as e:
+            logger.error(f"[BcastEntry] build msg error: {e}")
+        if msgs:
+            ok, total = push_to_groups(msgs)
+            cur.execute(
+                "UPDATE broadcast_schedule_entries SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
+                (now_tw().isoformat(), total, row["id"])
+            )
+            logger.info(f"[BcastEntry] id={row['id']} {src_type}#{src_id} sent {ok}/{total}")
+    conn.commit(); cur.close(); conn.close()
+
+scheduler.add_job(check_broadcast_schedule_entries, "interval", minutes=5,
+                  id="bcast_entries", replace_existing=True)
 
 def check_admin(req) -> bool:
     return req.headers.get("X-Admin-Pass") == ADMIN_PASSWORD
@@ -579,6 +644,8 @@ def add_scheduled_announcement():
     if not send_at_str: return jsonify({"ok":False,"error":"請選擇發送時間"})
     try:
         send_at = datetime.fromisoformat(send_at_str)
+        if send_at.tzinfo is None:
+            send_at = send_at.replace(tzinfo=TZ)
     except Exception:
         return jsonify({"ok":False,"error":"時間格式錯誤"})
     conn = get_db(); cur = conn.cursor()
@@ -611,6 +678,104 @@ def send_scheduled_announcement_now(aid):
     ok, total = push_to_groups(msgs)
     cur.execute("UPDATE scheduled_announcements SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
                 (isonow(), total, aid))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok":ok,"total":total})
+
+# ── Broadcast Schedule Entries ──
+@app.route("/admin/broadcast-entries", methods=["GET"])
+def get_broadcast_entries():
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    src_type = request.args.get("source_type","")
+    src_id   = request.args.get("source_id","")
+    conn = get_db(); cur = conn.cursor()
+    q = "SELECT * FROM broadcast_schedule_entries"
+    params = []
+    conds = []
+    if src_type: conds.append("source_type=%s"); params.append(src_type)
+    if src_id:   conds.append("source_id=%s");   params.append(int(src_id))
+    if conds: q += " WHERE " + " AND ".join(conds)
+    q += " ORDER BY send_at ASC"
+    cur.execute(q, params)
+    rows = cur.fetchall(); cur.close(); conn.close()
+    result = []
+    for r in rows:
+        d = dict(r)
+        if d.get("send_at"):   d["send_at"]   = str(d["send_at"])
+        if d.get("sent_time"): d["sent_time"]  = str(d["sent_time"])
+        if d.get("created_at"):d["created_at"] = str(d["created_at"])
+        result.append(d)
+    return jsonify({"entries": result})
+
+@app.route("/admin/broadcast-entries", methods=["POST"])
+def add_broadcast_entries():
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    d = request.json
+    src_type = d.get("source_type","").strip()
+    src_id   = d.get("source_id")
+    send_ats = d.get("send_ats", [])   # list of ISO datetime strings
+    if not src_type or not src_id or not send_ats:
+        return jsonify({"ok":False,"error":"請填寫 source_type、source_id 及發送時間"})
+    conn = get_db(); cur = conn.cursor()
+    count = 0
+    for sa in send_ats:
+        try:
+            dt = datetime.fromisoformat(sa)
+            # 若為 naive datetime（前端送台灣本地時間），補上台灣時區
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=TZ)
+            cur.execute("""
+                INSERT INTO broadcast_schedule_entries
+                  (source_type, source_id, send_at, sent, created_at)
+                VALUES (%s,%s,%s,FALSE,%s)
+            """, (src_type, int(src_id), dt.isoformat(), isonow()))
+            count += 1
+        except Exception as e:
+            logger.warning(f"[BcastEntry] skip invalid send_at {sa}: {e}")
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True, "added": count})
+
+@app.route("/admin/broadcast-entries/<int:eid>", methods=["DELETE"])
+def delete_broadcast_entry(eid):
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("DELETE FROM broadcast_schedule_entries WHERE id=%s AND sent=FALSE", (eid,))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True})
+
+@app.route("/admin/broadcast-entries/<int:eid>/send-now", methods=["POST"])
+def send_broadcast_entry_now(eid):
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT * FROM broadcast_schedule_entries WHERE id=%s", (eid,))
+    row = cur.fetchone()
+    if not row: cur.close(); conn.close(); return jsonify({"ok":False,"error":"找不到排程"})
+    # Reuse the same build-message logic
+    src_type = row["source_type"]; src_id = row["source_id"]
+    msgs = []
+    if src_type == "course":
+        cur.execute("""SELECT c.*, cat.name AS category_name FROM courses c
+                       LEFT JOIN categories cat ON c.category_id=cat.id WHERE c.id=%s""", (src_id,))
+        c = cur.fetchone()
+        if c:
+            cd = datetime.strptime(str(c["course_date"]), "%Y-%m-%d").date()
+            days_left = (cd - today_tw()).days
+            timing = "【今天上課】" if days_left==0 else f"【還有 {days_left} 天】" if days_left>0 else "【已結束】"
+            cat = f"[{c['category_name']}] " if c["category_name"] else ""
+            text = (f"📚 課程提醒 {timing}\n━━━━━━━━━━━━\n{cat}📌 {c['title']}\n📅 {c['course_date']} {c['course_time']}")
+            if c["location"]:    text += f"\n📍 {c['location']}"
+            if c["description"]: text += f"\n📝 {c['description']}"
+            if c["image_url"]:   msgs.append({"type":"image","originalContentUrl":c["image_url"],"previewImageUrl":c["image_url"]})
+            msgs.append({"type":"text","text":text})
+    elif src_type == "broadcast":
+        cur.execute("SELECT * FROM scheduled_broadcasts WHERE id=%s", (src_id,))
+        b = cur.fetchone()
+        if b:
+            if b["image_url"]: msgs.append({"type":"image","originalContentUrl":b["image_url"],"previewImageUrl":b["image_url"]})
+            msgs.append({"type":"text","text":b["content"]})
+    if not msgs: cur.close(); conn.close(); return jsonify({"ok":False,"error":"無法組建訊息"})
+    ok, total = push_to_groups(msgs)
+    cur.execute("UPDATE broadcast_schedule_entries SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
+                (isonow(), total, eid))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok":ok,"total":total})
 
