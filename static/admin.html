@@ -1843,15 +1843,18 @@ function renderGroups(){
   const tbody = document.getElementById('groups-panel-tbody');
   if(!tbody) return;
   tbody.innerHTML = _groups.length ? _groups.map(g=>{
-    const typeLabel = esc(g.group_type||'一般');
+    const isRoom = g.group_id && g.group_id.startsWith('C');
+    const typeLabel = isRoom ? '多人聊天室' : esc(g.group_type||'群組');
+    const typeStyle = isRoom ? 'background:#FFF3CD;color:#856404;border:1px solid #FFEAA7' : 'background:#E8F5E9;color:#2E7D32';
+    const roomWarn = isRoom ? `<span title="多人聊天室（C開頭）不支援 Push API，請改用正式群組（G開頭）" style="cursor:help;color:#C62828;font-size:11px;margin-left:4px">⚠️ 無法推播</span>` : '';
     const name = esc(g.group_name||'（未命名）');
     return `<tr id="grow-${esc(g.group_id)}">
       <td><div style="width:8px;height:8px;border-radius:50%;background:${g.active?'#06C755':'#CCC'};margin:0 auto"></div></td>
       <td>
-        <div style="font-weight:500;font-size:13px">${name}</div>
+        <div style="font-weight:500;font-size:13px">${name}${roomWarn}</div>
       </td>
       <td style="font-family:monospace;font-size:11px;color:#999;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(g.group_id)}">${esc(g.group_id)}</td>
-      <td><span class="badge bg-gray" style="font-size:11px">${typeLabel}</span></td>
+      <td><span class="badge" style="font-size:11px;padding:2px 7px;border-radius:5px;${typeStyle}">${typeLabel}</span></td>
       <td style="font-size:12px;color:#999;white-space:nowrap">${g.joined_at?g.joined_at.slice(0,16).replace('T',' '):'—'}</td>
       <td style="text-align:center"><button class="toggle ${g.active?'on':''}" onclick="toggleGroup('${esc(g.group_id)}',this)"></button></td>
       <td>
