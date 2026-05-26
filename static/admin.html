@@ -334,44 +334,60 @@ function delCookie(name){
   document.cookie = name+'=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/';
 }
 
-// ── 認證：用 Cookie 儲存密碼，避免 Safari localStorage 隔離問題 ──
-async function promptPass(){
-  while(true){
-    const p = prompt('請輸入管理密碼：','');
-    if(p === null){ return null; }
-    const test = await fetch('/admin/info',{headers:{'X-Admin-Pass':p,'Content-Type':'application/json'}});
-    if(test.ok){
-      setCookie('admin_pass', p, 30); // 存 30 天
-      return p;
-    }
-    alert('密碼錯誤，請重試');
-    delCookie('admin_pass');
-  }
-}
-
-async function getPass(){
-  const cached = getCookie('admin_pass');
-  if(cached){
-    const test = await fetch('/admin/info',{headers:{'X-Admin-Pass':cached,'Content-Type':'application/json'}});
-    if(test.ok) return cached;
-    delCookie('admin_pass');
-  }
-  return await promptPass();
-}
-
+// ── 認證：單一 Promise 鎖，避免 Promise.all 並行觸發多次 prompt ──
 let _pass = null;
+let _authPromise = null;
+
+async function ensureAuth(){
+  // 已有有效密碼，直接返回
+  if(_pass) return _pass;
+  // 已有進行中的驗證，等它完成，不另開 prompt
+  if(_authPromise) return _authPromise;
+
+  _authPromise = (async () => {
+    // 先試 Cookie
+    const cached = getCookie('admin_pass');
+    if(cached){
+      const test = await fetch('/admin/info', {headers:{'X-Admin-Pass':cached,'Content-Type':'application/json'}});
+      if(test.ok){
+        _pass = cached;
+        _authPromise = null;
+        return _pass;
+      }
+      delCookie('admin_pass');
+    }
+    // Cookie 無效 → 跳一次 prompt，直到成功或取消
+    while(true){
+      const p = prompt('請輸入管理密碼：', '');
+      if(p === null){ _authPromise = null; return null; }
+      const test = await fetch('/admin/info', {headers:{'X-Admin-Pass':p,'Content-Type':'application/json'}});
+      if(test.ok){
+        setCookie('admin_pass', p, 30);
+        _pass = p;
+        _authPromise = null;
+        return _pass;
+      }
+      alert('密碼錯誤，請重試');
+      delCookie('admin_pass');
+    }
+  })();
+
+  return _authPromise;
+}
 
 async function api(path, opts={}){
-  if(!_pass) _pass = await getPass();
-  if(!_pass) return {};
-  const h = {'X-Admin-Pass': _pass, 'Content-Type': 'application/json'};
+  const pass = await ensureAuth();
+  if(!pass) return {};
+  const h = {'X-Admin-Pass': pass, 'Content-Type': 'application/json'};
   const r = await fetch(path, {headers: h, ...opts});
   if(r.status === 401){
-    delCookie('admin_pass');
+    // session 失效，清除後重驗一次
     _pass = null;
-    _pass = await getPass();
-    if(!_pass) return {};
-    const h2 = {'X-Admin-Pass': _pass, 'Content-Type': 'application/json'};
+    _authPromise = null;
+    delCookie('admin_pass');
+    const newPass = await ensureAuth();
+    if(!newPass) return {};
+    const h2 = {'X-Admin-Pass': newPass, 'Content-Type': 'application/json'};
     return (await fetch(path, {headers: h2, ...opts})).json();
   }
   return r.json();
@@ -381,6 +397,7 @@ async function api(path, opts={}){
 function logout(){
   delCookie('admin_pass');
   _pass = null;
+  _authPromise = null;
   location.reload();
 }
 
@@ -425,12 +442,11 @@ async function loadDashboard(){
   _courses = ci.courses||[];
   _scheds  = si.schedules||[];
   const groups = gi.groups||[];
-  const activeGroups = groups.filter(g=>g.active);
 
   document.getElementById('st-courses').textContent = _courses.length;
-  document.getElementById('st-groups').textContent  = activeGroups.length;
-  document.getElementById('sidebar-groups').textContent = activeGroups.length+' 個';
-  document.getElementById('broadcast-group-hint').textContent = '將推播至 '+activeGroups.length+' 個群組';
+  document.getElementById('st-groups').textContent  = groups.length;
+  document.getElementById('sidebar-groups').textContent = groups.length+' 個';
+  document.getElementById('broadcast-group-hint').textContent = '將推播至 '+groups.length+' 個群組';
 
   const activeS = _scheds.filter(s=>s.active).length;
   document.getElementById('st-sched').textContent = _scheds.length;
