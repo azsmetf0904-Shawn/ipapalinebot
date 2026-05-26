@@ -196,8 +196,10 @@ def init_db():
             remind_unit           TEXT DEFAULT 'days',
             remind_interval_value INTEGER DEFAULT 7,
             remind_interval_unit  TEXT DEFAULT 'days',
+            bot_key               TEXT DEFAULT '',
             created_at            TIMESTAMPTZ NOT NULL
         );
+        ALTER TABLE courses ADD COLUMN IF NOT EXISTS bot_key TEXT DEFAULT '';
         CREATE TABLE IF NOT EXISTS course_reminders (
             id          SERIAL PRIMARY KEY,
             course_id   INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
@@ -476,6 +478,7 @@ def check_broadcast_schedule_entries():
         src_type = row["source_type"]
         src_id   = row["source_id"]
         msgs = []
+        entry_bot_key = row.get("bot_key", "")
         try:
             if src_type == "course":
                 cur2 = conn.cursor()
@@ -485,6 +488,8 @@ def check_broadcast_schedule_entries():
                 """, (src_id,))
                 c = cur2.fetchone(); cur2.close()
                 if c:
+                    # 優先用課程自身的 bot_key，若無則用排程 entry 的 bot_key
+                    entry_bot_key = c.get("bot_key","") or entry_bot_key
                     cd = datetime.strptime(str(c["course_date"]), "%Y-%m-%d").date()
                     days_left = (cd - today_tw()).days
                     timing = "【今天上課】" if days_left==0 else f"【還有 {days_left} 天】" if days_left>0 else "【已結束】"
@@ -502,13 +507,14 @@ def check_broadcast_schedule_entries():
                 cur2.execute("SELECT * FROM scheduled_broadcasts WHERE id=%s", (src_id,))
                 b = cur2.fetchone(); cur2.close()
                 if b:
+                    entry_bot_key = b.get("bot_key","") or entry_bot_key
                     if b["image_url"]:
                         msgs.append({"type":"image","originalContentUrl":b["image_url"],"previewImageUrl":b["image_url"]})
                     msgs.append({"type":"text","text":b["content"]})
         except Exception as e:
             logger.error(f"[BcastEntry] build msg error: {e}")
         if msgs:
-            ok, total, _err = push_to_groups(msgs)
+            ok, total, _err = push_to_groups(msgs, bot_key=entry_bot_key)
             cur.execute(
                 "UPDATE broadcast_schedule_entries SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
                 (now_tw().isoformat(), total, row["id"])
@@ -684,11 +690,11 @@ def add_course():
     cur.execute("""
         INSERT INTO courses
           (category_id,title,course_date,course_time,location,description,image_url,
-           remind_value,remind_unit,remind_interval_value,remind_interval_unit,created_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+           remind_value,remind_unit,remind_interval_value,remind_interval_unit,bot_key,created_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
     """, (d.get("category_id"), title, course_date, d.get("course_time","09:00"),
           d.get("location",""), d.get("description",""), d.get("image_url",""),
-          rv, ru, iv, iu, isonow()))
+          rv, ru, iv, iu, d.get("bot_key","").strip(), isonow()))
     cid = cur.fetchone()["id"]
     conn.commit(); cur.close(); conn.close()
     dates = generate_reminders(cid, course_date, rv, ru, iv, iu)
@@ -709,10 +715,10 @@ def edit_course(cid):
     cur.execute("""
         UPDATE courses SET category_id=%s,title=%s,course_date=%s,course_time=%s,
         location=%s,description=%s,image_url=%s,remind_value=%s,remind_unit=%s,
-        remind_interval_value=%s,remind_interval_unit=%s WHERE id=%s
+        remind_interval_value=%s,remind_interval_unit=%s,bot_key=%s WHERE id=%s
     """, (d.get("category_id"), title, course_date, d.get("course_time","09:00"),
           d.get("location",""), d.get("description",""), d.get("image_url",""),
-          rv, ru, iv, iu, cid))
+          rv, ru, iv, iu, d.get("bot_key","").strip(), cid))
     conn.commit(); cur.close(); conn.close()
     dates = generate_reminders(cid, course_date, rv, ru, iv, iu)
     return jsonify({"ok":True,"remind_count":len(dates)})
