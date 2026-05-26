@@ -292,7 +292,10 @@ textarea{resize:vertical;min-height:72px}
         <div class="card">
           <div class="card-head">
             <span class="card-title"><i class="ti ti-users"></i> 群組清單</span>
-            <span style="font-size:12px;color:#999" id="groups-count-hint"></span>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:12px;color:#999" id="groups-count-hint"></span>
+              <button class="btn btn-sm" onclick="syncAllGroupNames()" id="sync-all-btn"><i class="ti ti-refresh"></i> 同步所有名稱</button>
+            </div>
           </div>
           <table class="tbl">
             <thead>
@@ -322,17 +325,24 @@ textarea{resize:vertical;min-height:72px}
           <div class="grid2">
             <div class="fg">
               <label>群組名稱</label>
-              <input id="ge-name" placeholder="輸入易識別的名稱，例：新北業務群">
+              <div style="display:flex;gap:6px">
+                <input id="ge-name" placeholder="輸入易識別的名稱，例：新北業務群" style="flex:1">
+                <button class="btn btn-sm" onclick="syncOneName()" title="從 LINE 自動抓取名稱" style="flex-shrink:0"><i class="ti ti-refresh"></i></button>
+              </div>
             </div>
             <div class="fg">
-              <label>群組類型</label>
-              <select id="ge-type">
-                <option value="general">一般</option>
-                <option value="sales">業務</option>
-                <option value="training">培訓</option>
-                <option value="internal">內部</option>
-                <option value="vip">VIP</option>
-              </select>
+              <label>群組類型 <span style="font-size:11px;color:#999">（可自由輸入）</span></label>
+              <input id="ge-type" list="group-type-list" placeholder="例：業務、培訓、VIP…">
+              <datalist id="group-type-list">
+                <option value="一般">
+                <option value="業務">
+                <option value="培訓">
+                <option value="內部">
+                <option value="VIP">
+                <option value="加盟商">
+                <option value="客戶">
+                <option value="合作夥伴">
+              </datalist>
             </div>
           </div>
           <div style="display:flex;justify-content:flex-end;margin-top:8px">
@@ -774,9 +784,6 @@ async function deleteCat(id){
 }
 
 // ── Groups ──
-const GROUP_TYPE_LABELS = {general:'一般',sales:'業務',training:'培訓',internal:'內部',vip:'VIP'};
-const GROUP_TYPE_COLORS = {general:'bg-gray',sales:'bg-orange',training:'bg-blue',internal:'bg-green',vip:'bg-red'};
-
 let _groups = [];
 
 async function loadGroups(){
@@ -788,22 +795,21 @@ async function loadGroups(){
 function renderGroups(){
   const hint = document.getElementById('groups-count-hint');
   const activeCount = _groups.filter(g=>g.active).length;
-  if(hint) hint.textContent = `共 ${_groups.length} 個群組，${activeCount} 個發送中`;
+  if(hint) hint.textContent = `共 ${_groups.length} 個，${activeCount} 個發送中`;
   document.getElementById('sidebar-groups').textContent = activeCount+' 個';
 
   const tbody = document.getElementById('groups-panel-tbody');
   if(!tbody) return;
   tbody.innerHTML = _groups.length ? _groups.map(g=>{
-    const typeLabel = GROUP_TYPE_LABELS[g.group_type]||g.group_type||'一般';
-    const typeColor = GROUP_TYPE_COLORS[g.group_type]||'bg-gray';
-    const name = g.group_name || '（未命名）';
-    return `<tr id="grow-${CSS.escape(g.group_id)}">
+    const typeLabel = esc(g.group_type||'一般');
+    const name = esc(g.group_name||'（未命名）');
+    return `<tr id="grow-${esc(g.group_id)}">
       <td><div style="width:8px;height:8px;border-radius:50%;background:${g.active?'#06C755':'#CCC'};margin:0 auto"></div></td>
       <td>
-        <div style="font-weight:500;font-size:13px">${esc(name)}</div>
+        <div style="font-weight:500;font-size:13px">${name}</div>
       </td>
       <td style="font-family:monospace;font-size:11px;color:#999;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(g.group_id)}">${esc(g.group_id)}</td>
-      <td><span class="badge ${typeColor}">${esc(typeLabel)}</span></td>
+      <td><span class="badge bg-gray" style="font-size:11px">${typeLabel}</span></td>
       <td style="font-size:12px;color:#999;white-space:nowrap">${g.joined_at?g.joined_at.slice(0,16).replace('T',' '):'—'}</td>
       <td style="text-align:center"><button class="toggle ${g.active?'on':''}" onclick="toggleGroup('${esc(g.group_id)}',this)"></button></td>
       <td>
@@ -820,7 +826,7 @@ function openGroupEdit(gid){
   const g = _groups.find(x=>x.group_id===gid); if(!g) return;
   document.getElementById('ge-gid').value  = gid;
   document.getElementById('ge-name').value = g.group_name||'';
-  document.getElementById('ge-type').value = g.group_type||'general';
+  document.getElementById('ge-type').value = g.group_type||'';
   const card = document.getElementById('group-edit-card');
   card.style.display='block';
   card.scrollIntoView({behavior:'smooth',block:'nearest'});
@@ -833,12 +839,34 @@ function closeGroupEdit(){
 async function saveGroupEdit(){
   const gid  = document.getElementById('ge-gid').value;
   const name = document.getElementById('ge-name').value.trim();
-  const type = document.getElementById('ge-type').value;
+  const type = document.getElementById('ge-type').value.trim();
   const r = await api(`/admin/groups/${encodeURIComponent(gid)}`,{
     method:'PUT', body:JSON.stringify({group_name:name, group_type:type})
   });
   if(r.ok){ toast('群組資訊已更新','ok'); closeGroupEdit(); loadGroups(); }
   else toast(r.error||'更新失敗','err');
+}
+
+async function syncOneName(){
+  const gid = document.getElementById('ge-gid').value;
+  if(!gid){ toast('請先選取一個群組','err'); return; }
+  toast('同步中...');
+  const r = await api(`/admin/groups/${encodeURIComponent(gid)}/sync-name`,{method:'POST'});
+  if(r.ok){
+    document.getElementById('ge-name').value = r.group_name;
+    toast(`已取得名稱：${r.group_name}`,'ok');
+  } else toast(r.error||'同步失敗','err');
+}
+
+async function syncAllGroupNames(){
+  const btn = document.getElementById('sync-all-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ti ti-loader"></i> 同步中...';
+  const r = await api('/admin/groups/sync-names',{method:'POST'});
+  btn.disabled = false;
+  btn.innerHTML = '<i class="ti ti-refresh"></i> 同步所有名稱';
+  if(r.ok){ toast(`已同步 ${r.updated}/${r.total} 個群組名稱`,'ok'); loadGroups(); }
+  else toast('同步失敗','err');
 }
 
 async function toggleGroup(gid, btn){
