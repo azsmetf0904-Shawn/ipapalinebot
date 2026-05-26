@@ -1037,9 +1037,24 @@ def update_scheduled(sid):
     else:
         iv = float(d.get("interval_value",1))
         iu = d.get("interval_unit","days")
-        cur.execute("""
-            UPDATE scheduled_broadcasts SET title=%s,content=%s,image_url=%s,interval_seconds=%s WHERE id=%s
-        """, (d.get("title"), d.get("content"), d.get("image_url",""), unit_to_seconds(iv,iu), sid))
+        bot_key = d.get("bot_key","").strip()
+        start_time = d.get("start_time","")
+        try:
+            next_run = datetime.fromisoformat(start_time).isoformat()
+        except Exception:
+            next_run = None
+        if next_run:
+            cur.execute("""
+                UPDATE scheduled_broadcasts
+                SET title=%s,content=%s,image_url=%s,interval_seconds=%s,bot_key=%s,next_run=%s
+                WHERE id=%s
+            """, (d.get("title"), d.get("content"), d.get("image_url",""), unit_to_seconds(iv,iu), bot_key, next_run, sid))
+        else:
+            cur.execute("""
+                UPDATE scheduled_broadcasts
+                SET title=%s,content=%s,image_url=%s,interval_seconds=%s,bot_key=%s
+                WHERE id=%s
+            """, (d.get("title"), d.get("content"), d.get("image_url",""), unit_to_seconds(iv,iu), bot_key, sid))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok": True})
 
