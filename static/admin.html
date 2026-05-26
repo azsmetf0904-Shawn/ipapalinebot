@@ -140,6 +140,42 @@ textarea{resize:vertical;min-height:72px}
 .tab-btn{padding:8px 16px;font-size:13px;border:none;background:none;cursor:pointer;color:#999;border-bottom:2px solid transparent;margin-bottom:-1px;font-family:inherit;transition:all .15s}
 .tab-btn.active{color:#06A847;border-bottom-color:#06C755;font-weight:500}
 
+/* Date-time picker modal */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:200;display:flex;align-items:center;justify-content:center}
+.modal-box{background:#fff;border-radius:16px;width:560px;max-width:95vw;max-height:92vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,.18)}
+.modal-head{display:flex;align-items:center;justify-content:space-between;padding:18px 20px 0}
+.modal-title{font-size:15px;font-weight:600;color:#1A1A1A}
+.modal-body{padding:18px 20px}
+.modal-foot{display:flex;justify-content:flex-end;gap:8px;padding:0 20px 18px}
+.dp-mini-cal{margin-bottom:14px}
+.dp-cal-nav{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+/* Quick date presets */
+.dp-presets{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.dp-preset-btn{padding:4px 10px;font-size:11px;border-radius:20px;border:1px solid #E0E0DC;background:#fff;cursor:pointer;color:#555;font-family:inherit;transition:all .12s}
+.dp-preset-btn:hover{background:#E9FBF0;border-color:#B2DFC4;color:#06A847}
+/* Time slots */
+.dp-time-slots{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
+.dp-time-slot{padding:5px 12px;font-size:12px;border-radius:20px;border:1px solid #E0E0DC;background:#fff;cursor:pointer;color:#555;font-family:inherit;transition:all .12s}
+.dp-time-slot:hover{background:#E9FBF0;border-color:#B2DFC4;color:#06A847}
+.dp-time-slot.active{background:#06C755;border-color:#06C755;color:#fff}
+.dp-cal-label{font-size:13px;font-weight:600;color:#1A1A1A}
+.dp-cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+.dp-dow{text-align:center;font-size:11px;color:#999;font-weight:500;padding:3px 0}
+.dp-day{text-align:center;padding:6px 2px;font-size:13px;border-radius:6px;cursor:pointer;border:1px solid transparent;transition:all .1s;user-select:none}
+.dp-day:hover:not(.dp-other){background:#F0F0EC}
+.dp-day.dp-other{color:#CCC;cursor:default}
+.dp-day.dp-today{font-weight:700;color:#06A847}
+.dp-day.dp-selected{background:#06C755;color:#fff;border-color:#06C755;font-weight:600}
+.dp-day.dp-selected:hover{background:#05b34a}
+.dp-time-row{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.dp-time-row label{font-size:12px;color:#666;font-weight:500;white-space:nowrap}
+.dp-selected-list{max-height:140px;overflow-y:auto;display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.dp-chip{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;background:#E9FBF0;border:1px solid #B2DFC4;border-radius:20px;font-size:12px;color:#0A7A3E;font-weight:500}
+.dp-chip button{border:none;background:none;cursor:pointer;color:#0A7A3E;padding:0;line-height:1;font-size:14px}
+.dp-chip.dp-chip-sent{background:#F5F5F0;border-color:#E0E0DC;color:#999}
+.entry-row{display:flex;align-items:center;gap:8px;padding:8px 10px;background:#FAFAF8;border:1px solid #E8E8E4;border-radius:7px;margin-bottom:6px}
+.entry-time{font-size:12px;font-weight:600;color:#1A5CC4;min-width:130px;white-space:nowrap}
+.entry-status{font-size:11px;margin-left:auto;white-space:nowrap}
 
 /* Remind grid */
 .remind-grid{display:grid;grid-template-columns:80px 1fr 80px 1fr;gap:8px;align-items:end}
@@ -254,6 +290,15 @@ textarea{resize:vertical;min-height:72px}
             <button class="btn btn-primary" onclick="saveCourse()"><i class="ti ti-device-floppy"></i> 儲存課程</button>
           </div>
         </div>
+        <div class="card" style="background:#EEF5FF;border-color:#B8D0F8">
+          <div style="display:flex;align-items:flex-start;gap:10px">
+            <i class="ti ti-calendar-time" style="font-size:20px;color:#1A5CC4;flex-shrink:0;margin-top:2px"></i>
+            <div>
+              <div style="font-size:13px;font-weight:600;color:#1A5CC4;margin-bottom:3px">指定日期時間發送</div>
+              <div style="font-size:12px;color:#3a5fa8">在課程清單中，點擊 <i class="ti ti-calendar-time" style="font-size:12px;vertical-align:-1px"></i> 按鈕可為該課程指定特定日期＋時間發送提醒，支援多選日期，系統會在指定時間自動推播到所有群組。</div>
+            </div>
+          </div>
+        </div>
         <div class="card">
           <div class="card-head"><span class="card-title"><i class="ti ti-list"></i> 課程清單</span>
             <div style="display:flex;align-items:center;gap:10px">
@@ -355,6 +400,15 @@ textarea{resize:vertical;min-height:72px}
 
       <!-- SCHEDULED -->
       <div id="panel-scheduled" class="panel">
+        <div class="card" style="background:#EEF5FF;border-color:#B8D0F8">
+          <div style="display:flex;align-items:flex-start;gap:10px">
+            <i class="ti ti-calendar-time" style="font-size:20px;color:#1A5CC4;flex-shrink:0;margin-top:2px"></i>
+            <div>
+              <div style="font-size:13px;font-weight:600;color:#1A5CC4;margin-bottom:3px">指定日期時間發送</div>
+              <div style="font-size:12px;color:#3a5fa8">在下方排程清單中，點擊 <i class="ti ti-calendar-time" style="font-size:12px;vertical-align:-1px"></i> 按鈕可為該廣播指定特定日期＋時間發送，支援多選日期。</div>
+            </div>
+          </div>
+        </div>
         <div class="card">
           <div class="card-head"><span class="card-title"><i class="ti ti-plus"></i> 新增排程廣播</span></div>
           <div class="grid2">
@@ -519,6 +573,70 @@ textarea{resize:vertical;min-height:72px}
   </div><!-- /main -->
 </div><!-- /app -->
 
+<!-- ── 指定日期時間發送 Modal ── -->
+<div id="dp-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeDatePicker()">
+  <div class="modal-box">
+    <div class="modal-head">
+      <div>
+        <div class="modal-title"><i class="ti ti-calendar-time" style="font-size:17px;vertical-align:-2px;margin-right:6px;color:#1A5CC4"></i>指定日期時間發送</div>
+        <div id="dp-subtitle" style="font-size:12px;color:#999;margin-top:3px"></div>
+      </div>
+      <button class="btn btn-sm" onclick="closeDatePicker()" style="color:#999;padding:4px 8px"><i class="ti ti-x"></i></button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:12px;color:#666;font-weight:500;margin-bottom:6px">快速選擇日期</div>
+      <div class="dp-presets" id="dp-presets">
+        <button class="dp-preset-btn" onclick="dpPreset(0)">今天</button>
+        <button class="dp-preset-btn" onclick="dpPreset(1)">明天</button>
+        <button class="dp-preset-btn" onclick="dpPreset(3)">後3天</button>
+        <button class="dp-preset-btn" onclick="dpPreset(7)">後7天</button>
+        <button class="dp-preset-btn" onclick="dpPreset(14)">後14天</button>
+        <button class="dp-preset-btn" onclick="dpPreset(30)">後30天</button>
+      </div>
+      <div class="dp-mini-cal">
+        <div class="dp-cal-nav">
+          <button class="btn btn-sm" onclick="dpPrev()"><i class="ti ti-chevron-left"></i></button>
+          <span class="dp-cal-label" id="dp-cal-label" style="font-size:13px;font-weight:600;color:#1A1A1A"></span>
+          <button class="btn btn-sm" onclick="dpNext()"><i class="ti ti-chevron-right"></i></button>
+        </div>
+        <div class="dp-cal-grid" id="dp-cal-grid">
+          <div class="dp-dow">日</div><div class="dp-dow">一</div><div class="dp-dow">二</div>
+          <div class="dp-dow">三</div><div class="dp-dow">四</div><div class="dp-dow">五</div><div class="dp-dow">六</div>
+        </div>
+      </div>
+      <div style="font-size:12px;color:#666;font-weight:500;margin-bottom:6px">快速時間（點選日期後自動套用）</div>
+      <div class="dp-time-slots" id="dp-time-slots">
+        <button class="dp-time-slot" onclick="dpSetTime('08:00')">08:00</button>
+        <button class="dp-time-slot" onclick="dpSetTime('09:00')">09:00</button>
+        <button class="dp-time-slot" onclick="dpSetTime('12:00')">12:00</button>
+        <button class="dp-time-slot" onclick="dpSetTime('18:00')">18:00</button>
+        <button class="dp-time-slot" onclick="dpSetTime('20:00')">20:00</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+        <label style="font-size:12px;color:#666;font-weight:500;white-space:nowrap">自訂時間：</label>
+        <input id="dp-custom-time" type="time" value="08:00" style="width:130px">
+        <button class="btn btn-sm btn-primary" onclick="dpAddCustomTime()" style="flex-shrink:0"><i class="ti ti-plus"></i> 加入此時間</button>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <div style="font-size:12px;color:#666;font-weight:500">已選排程 <span id="dp-selected-count" style="color:#06A847;font-weight:600">0</span> 筆</div>
+        <button class="btn btn-sm" onclick="dpClearAll()" style="font-size:11px;color:#999;padding:3px 8px"><i class="ti ti-x"></i> 清除全部</button>
+      </div>
+      <div class="dp-selected-list" id="dp-selected-list">
+        <div style="font-size:12px;color:#CCC;padding:8px 0">尚未選取任何日期</div>
+      </div>
+      <div id="dp-existing-section" style="margin-top:14px;display:none">
+        <div style="font-size:12px;color:#666;font-weight:500;margin-bottom:6px">已存在的排程</div>
+        <div id="dp-existing-list"></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeDatePicker()">取消</button>
+      <button class="btn btn-primary" onclick="dpConfirm()"><i class="ti ti-device-floppy"></i> 儲存排程</button>
+    </div>
+  </div>
+</div>
+
+
 <div id="toast"></div>
 
 <script>
@@ -633,6 +751,227 @@ function updateClock(){
   const ti=document.getElementById('tz-cur'); if(ti) ti.value=tw;
 }
 setInterval(updateClock,1000); updateClock();
+
+
+// ── 指定日期時間排程 Date Picker ──
+let _dpSrcType = '';   // 'course' | 'broadcast'
+let _dpSrcId   = 0;
+let _dpYear, _dpMonth;
+let _dpSelected = [];  // [{date:'YYYY-MM-DD', time:'HH:MM'}]
+let _dpActiveTime = '08:00';
+
+function openDatePicker(srcType, srcId, title) {
+  _dpSrcType = srcType;
+  _dpSrcId   = srcId;
+  _dpSelected = [];
+  const now = new Date();
+  _dpYear  = now.getFullYear();
+  _dpMonth = now.getMonth();
+  _dpActiveTime = '08:00';
+  document.getElementById('dp-custom-time').value = '08:00';
+  document.getElementById('dp-subtitle').textContent =
+    (srcType === 'course' ? '📚 課程：' : '📢 廣播：') + title;
+  document.getElementById('dp-modal').style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+  dpSyncTimeSlots();
+  dpRenderCal();
+  dpRenderSelected();
+  loadDpExisting();
+}
+
+function closeDatePicker() {
+  document.getElementById('dp-modal').style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+function dpPrev() { _dpMonth--; if(_dpMonth<0){_dpMonth=11;_dpYear--;} dpRenderCal(); }
+function dpNext() { _dpMonth++; if(_dpMonth>11){_dpMonth=0;_dpYear++;} dpRenderCal(); }
+
+function dpRenderCal() {
+  const y = _dpYear, m = _dpMonth;
+  const monthNames = ['一月','二月','三月','四月','五月','六月','七月','八月','九月','十月','十一月','十二月'];
+  document.getElementById('dp-cal-label').textContent = `${y} 年 ${monthNames[m]}`;
+
+  const firstDay    = new Date(y, m, 1).getDay();
+  const daysInMonth = new Date(y, m+1, 0).getDate();
+  const daysInPrev  = new Date(y, m, 0).getDate();
+  const todayStr    = new Date().toLocaleDateString('sv', {timeZone:'Asia/Taipei'});
+
+  // Build set of selected dates (any time)
+  const selDates = new Set(_dpSelected.map(x => x.date));
+
+  const grid = document.getElementById('dp-cal-grid');
+  while(grid.children.length > 7) grid.removeChild(grid.lastChild);
+
+  for(let i = firstDay-1; i >= 0; i--) {
+    const d = document.createElement('div');
+    d.className = 'dp-day dp-other';
+    d.textContent = daysInPrev - i;
+    grid.appendChild(d);
+  }
+  for(let day = 1; day <= daysInMonth; day++) {
+    const dateStr = `${y}-${String(m+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+    const isSel   = selDates.has(dateStr);
+    const isToday = dateStr === todayStr;
+    const isPast  = dateStr < todayStr;
+    const d = document.createElement('div');
+    d.className = 'dp-day' + (isToday?' dp-today':'') + (isSel?' dp-selected':'') + (isPast&&!isSel?' dp-other':'');
+    d.textContent = day;
+    if(!isPast || isSel) {
+      d.style.cursor = 'pointer';
+      d.onclick = () => dpToggleDate(dateStr);
+    }
+    grid.appendChild(d);
+  }
+  const total = firstDay + daysInMonth;
+  const rem = total % 7 === 0 ? 0 : 7 - (total % 7);
+  for(let i = 1; i <= rem; i++) {
+    const d = document.createElement('div');
+    d.className = 'dp-day dp-other';
+    d.textContent = i;
+    grid.appendChild(d);
+  }
+}
+
+function dpToggleDate(dateStr) {
+  const existing = _dpSelected.filter(x => x.date === dateStr);
+  if(existing.length > 0) {
+    // Already selected — remove all entries for this date
+    _dpSelected = _dpSelected.filter(x => x.date !== dateStr);
+  } else {
+    // Add with current active time
+    _dpSelected.push({date: dateStr, time: _dpActiveTime});
+    _dpSelected.sort((a,b) => (a.date+a.time) < (b.date+b.time) ? -1 : 1);
+  }
+  dpRenderCal();
+  dpRenderSelected();
+}
+
+function dpPreset(daysAhead) {
+  const d = new Date();
+  d.setDate(d.getDate() + daysAhead);
+  const dateStr = d.toLocaleDateString('sv', {timeZone:'Asia/Taipei'});
+  // Add if not already in list
+  if(!_dpSelected.find(x => x.date === dateStr && x.time === _dpActiveTime)) {
+    _dpSelected.push({date: dateStr, time: _dpActiveTime});
+    _dpSelected.sort((a,b) => (a.date+a.time) < (b.date+b.time) ? -1 : 1);
+    // Navigate to that month
+    const [y, mo] = dateStr.split('-').map(Number);
+    _dpYear  = y;
+    _dpMonth = mo - 1;
+    dpRenderCal();
+    dpRenderSelected();
+  }
+}
+
+function dpSetTime(t) {
+  _dpActiveTime = t;
+  document.getElementById('dp-custom-time').value = t;
+  dpSyncTimeSlots();
+  // Update all selected entries that haven't been customized to a different time
+  // (just reflect new active time in chip display; don't change existing entries)
+}
+
+function dpSyncTimeSlots() {
+  document.querySelectorAll('.dp-time-slot').forEach(btn => {
+    btn.classList.toggle('active', btn.textContent.trim() === _dpActiveTime);
+  });
+}
+
+function dpAddCustomTime() {
+  const t = document.getElementById('dp-custom-time').value;
+  if(!t) { toast('請設定時間','err'); return; }
+  _dpActiveTime = t;
+  dpSyncTimeSlots();
+  // Add a new entry for each currently selected date at this time, if not duplicate
+  if(_dpSelected.length === 0) { toast('請先在月曆點選日期','err'); return; }
+  const selDates = [...new Set(_dpSelected.map(x=>x.date))];
+  let added = 0;
+  selDates.forEach(dateStr => {
+    if(!_dpSelected.find(x => x.date === dateStr && x.time === t)) {
+      _dpSelected.push({date: dateStr, time: t});
+      added++;
+    }
+  });
+  _dpSelected.sort((a,b) => (a.date+a.time) < (b.date+b.time) ? -1 : 1);
+  dpRenderSelected();
+  if(added) toast(`已為 ${added} 個日期加入 ${t} 時間 ✓`, 'ok');
+}
+
+function dpRemoveEntry(date, time) {
+  _dpSelected = _dpSelected.filter(x => !(x.date === date && x.time === time));
+  dpRenderCal();
+  dpRenderSelected();
+}
+
+function dpClearAll() {
+  _dpSelected = [];
+  dpRenderCal();
+  dpRenderSelected();
+}
+
+function dpRenderSelected() {
+  const count = _dpSelected.length;
+  document.getElementById('dp-selected-count').textContent = count;
+  const div = document.getElementById('dp-selected-list');
+  if(!count) {
+    div.innerHTML = '<div style="font-size:12px;color:#CCC;padding:8px 0">尚未選取任何日期</div>';
+    return;
+  }
+  div.innerHTML = _dpSelected.map(({date, time}) =>
+    `<div class="dp-chip">
+      <i class="ti ti-clock" style="font-size:12px"></i>
+      ${date} ${time}
+      <button onclick="dpRemoveEntry('${date}','${time}')" title="移除">×</button>
+    </div>`
+  ).join('');
+}
+
+async function loadDpExisting() {
+  const sec  = document.getElementById('dp-existing-section');
+  const list = document.getElementById('dp-existing-list');
+  sec.style.display = 'none';
+  try {
+    const r = await api(`/admin/broadcast-entries?source_type=${_dpSrcType}&source_id=${_dpSrcId}`);
+    const entries = (r.entries||[]).filter(e=>!e.sent);
+    if(!entries.length) return;
+    sec.style.display = '';
+    list.innerHTML = entries.map(e => `
+      <div class="entry-row">
+        <span class="entry-time"><i class="ti ti-clock" style="font-size:12px;vertical-align:-1px"></i> ${e.send_at.slice(0,16).replace('T',' ')}</span>
+        <span class="entry-status"><span class="badge bg-blue">待發</span></span>
+        <button class="btn btn-sm btn-danger" onclick="dpDeleteEntry(${e.id})" title="刪除" style="margin-left:4px"><i class="ti ti-trash"></i></button>
+      </div>`
+    ).join('');
+  } catch(e) {}
+}
+
+async function dpDeleteEntry(eid) {
+  if(!confirm('確定刪除此排程？')) return;
+  const r = await api(`/admin/broadcast-entries/${eid}`,{method:'DELETE'});
+  if(r.ok){ toast('已刪除','ok'); loadDpExisting(); }
+  else toast('刪除失敗','err');
+}
+
+async function dpConfirm() {
+  if(!_dpSelected.length){ toast('請至少選擇一個日期','err'); return; }
+  // Build ISO datetimes (treat as Taiwan time = UTC+8)
+  const send_ats = _dpSelected.map(({date, time}) => {
+    // Convert TW time to UTC ISO
+    const [h, mi] = time.split(':').map(Number);
+    const [y, mo, d] = date.split('-').map(Number);
+    const utcMs = Date.UTC(y, mo-1, d, h-8, mi); // subtract +8 offset
+    return new Date(utcMs).toISOString();
+  });
+  const body = {source_type: _dpSrcType, source_id: _dpSrcId, send_ats};
+  const r = await api('/admin/broadcast-entries',{method:'POST', body:JSON.stringify(body)});
+  if(r.ok){
+    toast(`已新增 ${r.added} 個排程 ✓`, 'ok');
+    closeDatePicker();
+    if(_dpSrcType === 'course') loadCourses();
+    if(_dpSrcType === 'broadcast') loadScheduled();
+  } else toast(r.error||'新增失敗','err');
+}
 
 // ── Dashboard ──
 let _courses=[], _scheds=[], _catMap={};
@@ -783,6 +1122,7 @@ function renderCourses(){
       <td><div class="prog"><div class="prog-fill" style="width:${pct(c.sent_count,c.remind_count)}%"></div></div><span style="font-size:11px;color:#999">${c.sent_count||0}/${c.remind_count||0}</span></td>
       <td><div style="display:flex;gap:5px">
         <button class="btn btn-sm" onclick="sendCourseNow(${c.id})" title="立即發送"><i class="ti ti-send"></i></button>
+        <button class="btn btn-sm" onclick="openDatePicker('course',${c.id},${JSON.stringify(esc(c.title))})" title="指定日期時間發送" style="color:#1A5CC4;border-color:#B8D0F8;background:#EEF5FF"><i class="ti ti-calendar-time"></i></button>
         <button class="btn btn-sm" onclick="editCourse(${c.id})" title="編輯"><i class="ti ti-edit"></i></button>
         <button class="btn btn-sm btn-danger" onclick="deleteCourse(${c.id})" title="刪除"><i class="ti ti-trash"></i></button>
       </div></td>
@@ -1121,6 +1461,7 @@ function renderScheds(){
       </div>
       <div class="sch-actions">
         <button class="toggle ${s.active?'on':''}" onclick="toggleSched(${s.id},this)"></button>
+        <button class="btn btn-sm" style="color:#1A5CC4;border-color:#B8D0F8;background:#EEF5FF" onclick="openDatePicker('broadcast',${s.id},${JSON.stringify(esc(s.title))})" title="指定日期時間發送"><i class="ti ti-calendar-time"></i></button>
         <button class="btn btn-sm" onclick="sendSchedNow(${s.id})"><i class="ti ti-send"></i></button>
         <button class="btn btn-sm btn-danger" onclick="deleteSched(${s.id})"><i class="ti ti-trash"></i></button>
       </div>
