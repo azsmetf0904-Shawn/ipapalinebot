@@ -318,6 +318,21 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS chat_logs_group ON chat_logs (group_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS chat_logs_time  ON chat_logs (created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS course_broadcast_cache (
+            id           SERIAL PRIMARY KEY,
+            course_id    INTEGER REFERENCES courses(id) ON DELETE CASCADE,
+            send_at      TIMESTAMPTZ NOT NULL,
+            status       TEXT DEFAULT 'pending',
+            retry_count  INTEGER DEFAULT 0,
+            message_text TEXT NOT NULL,
+            image_url    TEXT DEFAULT '',
+            bot_key      TEXT DEFAULT '',
+            sent_time    TIMESTAMPTZ,
+            created_at   TIMESTAMPTZ NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS cbc_pending ON course_broadcast_cache (send_at, status);
+        CREATE INDEX IF NOT EXISTS cbc_course  ON course_broadcast_cache (course_id);
     """)
     # 預設分類
     for name, color in [("招商活動","#FF6B35"),("系統會議","#1A73E8"),("課程培訓","#06C755"),("其他","#9E9E9E")]:
@@ -472,10 +487,29 @@ def upload_image_to_imgbb(image_data: bytes, filename="image.jpg") -> tuple[str 
 # ── 提醒排程生成 ──
 def generate_reminders(course_id: int, course_date_str: str,
                        remind_value: int, remind_unit: str,
-                       interval_value: int, interval_unit: str) -> list[str]:
+                       interval_value: int, interval_unit: str,
+                       bot_key: str = "") -> list[str]:
+    """
+    生成提醒日期並同步寫入：
+    1. course_reminders（舊表，保留相容）
+    2. course_broadcast_cache（新快取表，預先組好訊息文字）
+    """
+    from datetime import time as dt_time
     conn = get_db()
     cur = conn.cursor()
+
+    # 取課程完整資料（用於組訊息）
+    cur.execute("""
+        SELECT c.*, cat.name AS category_name
+        FROM courses c
+        LEFT JOIN categories cat ON c.category_id = cat.id
+        WHERE c.id = %s
+    """, (course_id,))
+    course = cur.fetchone()
+
     cur.execute("DELETE FROM course_reminders WHERE course_id=%s", (course_id,))
+    # 清除舊的 pending 快取（保留已發送的紀錄）
+    cur.execute("DELETE FROM course_broadcast_cache WHERE course_id=%s AND status='pending'", (course_id,))
 
     course_date = datetime.strptime(course_date_str, "%Y-%m-%d").date()
     before_td   = timedelta(seconds=unit_to_seconds(remind_value, remind_unit))
@@ -489,33 +523,108 @@ def generate_reminders(course_id: int, course_date_str: str,
     if course_date not in dates:
         dates.append(course_date)
 
+    _bot_key = bot_key or (course.get("bot_key", "") if course else "")
+
     for rd in dates:
+        # course_reminders（原有邏輯）
         cur.execute("INSERT INTO course_reminders (course_id,remind_date,sent) VALUES (%s,%s,FALSE)",
                     (course_id, rd.isoformat()))
+
+        # course_broadcast_cache：預先組好完整訊息
+        if course:
+            days_left = (course_date - rd).days
+            if days_left == 0:
+                timing = "【今天上課】"
+            elif days_left > 0:
+                timing = f"【還有 {days_left} 天】"
+            else:
+                timing = "【課程當天】"
+            cat_name = course.get("category_name") or ""
+            cat_prefix = f"[{cat_name}] " if cat_name else ""
+            msg = (f"📚 課程提醒 {timing}\n━━━━━━━━━━━━\n"
+                   f"{cat_prefix}📌 {course['title']}\n"
+                   f"📅 {course_date_str} {course.get('course_time','09:00')}")
+            if course.get("location"):    msg += f"\n📍 {course['location']}"
+            if course.get("description"): msg += f"\n📝 {course['description']}" 
+
+            send_at = datetime.combine(rd, dt_time(8, 0), tzinfo=TZ)
+            cur.execute("""
+                INSERT INTO course_broadcast_cache
+                  (course_id, send_at, status, retry_count, message_text, image_url, bot_key, created_at)
+                VALUES (%s, %s, 'pending', 0, %s, %s, %s, %s)
+            """, (course_id, send_at.isoformat(), msg,
+                  course.get("image_url", ""), _bot_key, isonow()))
+
     conn.commit()
     cur.close(); conn.close()
     return [d.isoformat() for d in dates]
 
 # ── 每日 08:00 台灣時間觸發提醒 ──
 def check_and_send_reminders():
-    today = today_tw().isoformat()
-    logger.info(f"[Reminder] Checking reminders for {today} (TW)")
+    """
+    主要從 course_broadcast_cache 掃描並發送。
+    同時保留舊 course_reminders 路徑作為 fallback（向下相容）。
+    """
+    now  = now_tw()
+    today = now.date().isoformat()
+    logger.info(f"[Reminder] Checking cache reminders at {now.isoformat()}")
     conn = get_db()
-    cur = conn.cursor()
+    cur  = conn.cursor()
     try:
+        # ── 主路徑：從快取表發送 ──
         cur.execute("""
-            SELECT cr.id, c.title, c.course_date::text, c.course_time, c.location,
-                   c.description, c.image_url, cat.name AS category_name
+            SELECT * FROM course_broadcast_cache
+            WHERE send_at <= %s AND status = 'pending' AND retry_count < 3
+            ORDER BY send_at ASC
+        """, (now,))
+        cache_rows = cur.fetchall()
+        logger.info(f"[Reminder] {len(cache_rows)} cache items due")
+
+        for row in cache_rows:
+            msgs = []
+            if row["image_url"]:
+                msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
+            msgs.append({"type":"text","text":row["message_text"]})
+            ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
+            if ok > 0:
+                cur.execute("""
+                    UPDATE course_broadcast_cache
+                    SET status='sent', sent_time=%s WHERE id=%s
+                """, (isonow(), row["id"]))
+                # 同步標記舊表（保持一致）
+                cur.execute("""
+                    UPDATE course_reminders SET sent=TRUE
+                    WHERE course_id=%s AND remind_date=%s
+                """, (row["course_id"], row["send_at"].date().isoformat() if hasattr(row["send_at"],"date") else str(row["send_at"])[:10]))
+                logger.info(f"[Reminder] cache id={row['id']} sent {ok}/{total}")
+            else:
+                cur.execute("""
+                    UPDATE course_broadcast_cache
+                    SET retry_count=retry_count+1 WHERE id=%s
+                """, (row["id"],))
+                logger.warning(f"[Reminder] cache id={row['id']} failed ({_err}), retry_count+1")
+
+        # ── Fallback：若課程未建快取，走舊路徑 ──
+        cur.execute("""
+            SELECT cr.id, cr.course_id, c.title, c.course_date::text, c.course_time,
+                   c.location, c.description, c.image_url, c.bot_key,
+                   cat.name AS category_name
             FROM course_reminders cr
             JOIN courses c ON cr.course_id = c.id
             LEFT JOIN categories cat ON c.category_id = cat.id
             WHERE cr.remind_date = %s AND cr.sent = FALSE
-        """, (today,))
-        rows = cur.fetchall()
+              AND NOT EXISTS (
+                  SELECT 1 FROM course_broadcast_cache
+                  WHERE course_id = cr.course_id
+                    AND DATE(send_at AT TIME ZONE 'Asia/Taipei') = %s
+              )
+        """, (today, today))
+        legacy_rows = cur.fetchall()
+        logger.info(f"[Reminder] {len(legacy_rows)} legacy fallback reminders")
 
-        for row in rows:
+        for row in legacy_rows:
             cd = datetime.strptime(row["course_date"], "%Y-%m-%d").date()
-            days_left = (cd - today_tw().date()).days
+            days_left = (cd - now.date()).days
             timing = "【今天上課】" if days_left == 0 else f"【還有 {days_left} 天】"
             cat = f"[{row['category_name']}] " if row["category_name"] else ""
             text = (f"📚 課程提醒 {timing}\n━━━━━━━━━━━━\n"
@@ -523,18 +632,16 @@ def check_and_send_reminders():
                     f"📅 {row['course_date']} {row['course_time']}")
             if row["location"]:    text += f"\n📍 {row['location']}"
             if row["description"]: text += f"\n📝 {row['description']}"
-
             msgs = []
             if row["image_url"]:
                 msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
             msgs.append({"type":"text","text":text})
-
-            ok, _, _ = push_to_groups(msgs)
+            ok, _, _ = push_to_groups(msgs, bot_key=row.get("bot_key",""))
             if ok > 0:
                 cur.execute("UPDATE course_reminders SET sent=TRUE WHERE id=%s", (row["id"],))
 
         conn.commit()
-        logger.info(f"[Reminder] Processed {len(rows)} reminders")
+        logger.info(f"[Reminder] Done: {len(cache_rows)} cache + {len(legacy_rows)} legacy")
     finally:
         cur.close(); conn.close()
 
@@ -1545,9 +1652,10 @@ def ai_parse_course():
         ai_text = gemini_call(prompt, image_b64=image_b64,
                               image_media_type=image_media_type,
                               image_url=image_url, max_tokens=600)
-        # 清除 markdown code block（支援多種格式）
-        import re as _re
-        ai_text = _re.sub(r'```[a-z]*\n?', '', ai_text).strip()
+        # 清除 markdown code block
+        if "```" in ai_text:
+            ai_text = ai_text.split("```")[1]
+            if ai_text.startswith("json"): ai_text = ai_text[4:]
         # 擷取第一個完整 JSON 物件
         start = ai_text.find("{")
         end   = ai_text.rfind("}") + 1
@@ -1602,9 +1710,10 @@ def ai_parse_multi():
     try:
         ai_text = gemini_call(prompt, image_b64=image_b64,
                               image_media_type=image_media_type, max_tokens=2048)
-        # 清除 markdown（支援多種格式）
-        import re as _re
-        ai_text = _re.sub(r'```[a-z]*\n?', '', ai_text).strip()
+        # 清除 markdown
+        if "```" in ai_text:
+            ai_text = ai_text.split("```")[1]
+            if ai_text.startswith("json"): ai_text = ai_text[4:]
         # 擷取 JSON 陣列
         start = ai_text.find("[")
         end   = ai_text.rfind("]") + 1
@@ -1650,6 +1759,168 @@ def ai_parse_multi():
     except Exception as e:
         logger.error(f"AI parse multi error: {e}")
         return jsonify({"ok":False,"error":str(e)})
+
+
+@app.route("/admin/ai-parse-multi-v2", methods=["POST"])
+def ai_parse_multi_v2():
+    """
+    升級版批量 AI 解析：
+    - 支援全域提醒指令（「提前一個月，每七天發一次」）
+    - 完整欄位解析（地點、說明、時間）
+    - 直接寫入 courses + course_broadcast_cache
+    - 同時相容純文字多行格式和圖片
+    """
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    text = ""
+    global_cmd = ""   # 使用者補充的全域提醒指令
+    image_b64 = ""
+    image_media_type = "image/jpeg"
+
+    if request.content_type and "multipart" in request.content_type:
+        text       = request.form.get("text","").strip()
+        global_cmd = request.form.get("global_cmd","").strip()
+        if "image" in request.files:
+            f = request.files["image"]
+            image_b64 = base64.b64encode(f.read()).decode()
+            image_media_type = f.content_type or "image/jpeg"
+    else:
+        data = request.get_json() or {}
+        text       = data.get("text","").strip()
+        global_cmd = data.get("global_cmd","").strip()
+        image_b64  = data.get("image_b64","").strip()
+        image_media_type = data.get("image_media_type","image/jpeg")
+
+    if not text and not image_b64:
+        return jsonify({"ok":False,"error":"請輸入描述或上傳圖片"})
+
+    today = today_tw().isoformat()
+
+    # ── 組裝 prompt ──
+    global_cmd_section = ""
+    if global_cmd:
+        global_cmd_section = (
+            f"\n全域提醒指令（套用到所有活動，除非個別活動有特別指定）：\n"
+            f"「{global_cmd}」\n"
+            f"請從這句話中解析出 remind_value、remind_unit、remind_interval_value、remind_interval_unit。\n"
+            f"例：「提前一個月，每七天」→ remind_value=30, remind_unit=days, remind_interval_value=7, remind_interval_unit=days\n"
+            f"例：「提前兩週，每三天」→ remind_value=14, remind_unit=days, remind_interval_value=3, remind_interval_unit=days\n"
+        )
+
+    prompt = (
+        f"今天是 {today}（台灣時間）。請從圖片或文字中提取所有活動/課程資訊。{global_cmd_section}\n"
+        f"重要規則：\n"
+        f"- 找出每一個活動，全部列出，不要遺漏。\n"
+        f"- 只回傳一個 JSON 陣列，不要任何其他文字、說明或 markdown。\n"
+        f"- 相對日期（下週五、下個月、明天等）請根據今天 {today} 計算實際日期。\n"
+        f"- 若活動日期只有月份/日期（如 5/1、6月8日），請補上今年年份，若日期已過則推至明年。\n"
+        f"- description 欄位請盡量保留圖片或文字中的完整資訊（主辦單位、報名連結、費用、注意事項等）。\n"
+        f"- 若沒有時間資訊，course_time 填 '09:00'。\n"
+        f"- 若沒有地點資訊，location 填空字串。\n"
+        f"- remind_value / remind_unit：提前多久開始提醒（預設 30 天）。\n"
+        f"- remind_interval_value / remind_interval_unit：每隔多久發一次（預設 7 天）。\n"
+        f"JSON 陣列格式（直接輸出，不加任何前綴或 markdown）：\n"
+        f'[{{"title":"活動完整名稱","course_date":"YYYY-MM-DD","course_time":"HH:MM",'
+        f'"location":"地點（完整地址最好）","description":"完整說明（含主辦、費用、連結等）",'
+        f'"remind_value":30,"remind_unit":"days",'
+        f'"remind_interval_value":7,"remind_interval_unit":"days"}}]\n'
+        f'用戶輸入：{text}'
+    )
+
+    import re as _re
+    try:
+        ai_text = gemini_call(prompt, image_b64=image_b64,
+                              image_media_type=image_media_type, max_tokens=3000)
+        ai_text = _re.sub(r'```[a-z]*\n?', '', ai_text).strip()
+        start = ai_text.find("["); end = ai_text.rfind("]") + 1
+        if start == -1 or end == 0:
+            raise Exception("AI 未回傳有效 JSON 陣列")
+        courses = json.loads(ai_text[start:end].strip())
+        if not isinstance(courses, list) or len(courses) == 0:
+            raise Exception("AI 未解析出任何活動")
+
+        saved  = []
+        errors = []
+        conn = get_db(); cur = conn.cursor()
+        for c in courses:
+            try:
+                title       = str(c.get("title","")).strip()
+                course_date = str(c.get("course_date","")).replace("/","-").strip()
+                if not title or not course_date:
+                    errors.append(f"略過（缺標題或日期）：{c}"); continue
+
+                rv = int(c.get("remind_value", 30))
+                ru = str(c.get("remind_unit", "days"))
+                iv = int(c.get("remind_interval_value", 7))
+                iu = str(c.get("remind_interval_unit", "days"))
+
+                cur.execute("""
+                    INSERT INTO courses
+                      (category_id,title,course_date,course_time,location,description,image_url,
+                       remind_value,remind_unit,remind_interval_value,remind_interval_unit,bot_key,created_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,'',%s,%s,%s,%s,'',%s) RETURNING id
+                """, (None, title, course_date,
+                      str(c.get("course_time","09:00")),
+                      str(c.get("location","")),
+                      str(c.get("description","")),
+                      rv, ru, iv, iu, isonow()))
+                cid = cur.fetchone()["id"]
+                conn.commit()  # commit before generate_reminders (which opens its own conn)
+                dates = generate_reminders(cid, course_date, rv, ru, iv, iu)
+                saved.append({
+                    "id": cid, "title": title, "course_date": course_date,
+                    "location": c.get("location",""),
+                    "description": c.get("description",""),
+                    "remind_value": rv, "remind_unit": ru,
+                    "remind_interval_value": iv, "remind_interval_unit": iu,
+                    "remind_count": len(dates),
+                    "remind_dates": dates[:5],   # 前5個，供前端預覽
+                })
+            except Exception as ce:
+                errors.append(f"{c.get('title','?')}: {str(ce)[:80]}")
+        cur.close(); conn.close()
+
+        return jsonify({
+            "ok": True,
+            "saved": saved, "errors": errors,
+            "total": len(courses), "saved_count": len(saved),
+            "applied_cmd": global_cmd or None,
+        })
+    except Exception as e:
+        logger.error(f"AI parse multi v2 error: {e}")
+        return jsonify({"ok":False,"error":str(e)})
+
+
+@app.route("/admin/course-broadcast-cache", methods=["GET"])
+def get_course_broadcast_cache():
+    """查詢課程快取發送狀態（供後台預覽）"""
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    course_id = request.args.get("course_id")
+    status    = request.args.get("status","")
+    conn = get_db(); cur = conn.cursor()
+    conds = []; params = []
+    if course_id:
+        conds.append("cbc.course_id=%s"); params.append(int(course_id))
+    if status:
+        conds.append("cbc.status=%s"); params.append(status)
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
+    cur.execute(f"""
+        SELECT cbc.*, c.title AS course_title
+        FROM course_broadcast_cache cbc
+        LEFT JOIN courses c ON c.id = cbc.course_id
+        {where}
+        ORDER BY cbc.send_at ASC LIMIT 200
+    """, params)
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+    result = []
+    for r in rows:
+        d = dict(r)
+        if d.get("send_at"):   d["send_at"]   = str(d["send_at"])
+        if d.get("sent_time"): d["sent_time"]  = str(d["sent_time"])
+        if d.get("created_at"):d["created_at"] = str(d["created_at"])
+        result.append(d)
+    return jsonify({"cache": result, "total": len(result)})
+
 
 
 @app.route("/admin/ai-parse-broadcast", methods=["POST"])
