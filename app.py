@@ -1468,6 +1468,60 @@ def handle_text(event, bot_key: str = ""):
                 today = now.date().isoformat()
                 current_hour = now.hour
 
+                # ── 從資料庫撈課程與排程廣播作為 AI 背景知識 ──
+                try:
+                    _conn = get_db(); _cur = _conn.cursor()
+                    # 未來 60 天內的課程
+                    _cur.execute("""
+                        SELECT c.title, c.course_date::text, c.course_time,
+                               c.location, c.description, cat.name AS category
+                        FROM courses c
+                        LEFT JOIN categories cat ON c.category_id = cat.id
+                        WHERE c.course_date >= %s AND c.course_date <= %s
+                        ORDER BY c.course_date ASC
+                        LIMIT 20
+                    """, (today, (now + __import__('datetime').timedelta(days=60)).date().isoformat()))
+                    course_rows = _cur.fetchall()
+
+                    # 目前啟用中的排程廣播
+                    _cur.execute("""
+                        SELECT title, content, next_run, end_time
+                        FROM scheduled_broadcasts
+                        WHERE active = TRUE
+                        ORDER BY next_run ASC
+                        LIMIT 10
+                    """)
+                    broadcast_rows = _cur.fetchall()
+                    _cur.close(); _conn.close()
+                except Exception as db_err:
+                    logger.warning(f"[AI Mention] DB context fetch failed: {db_err}")
+                    course_rows = []
+                    broadcast_rows = []
+
+                # 格式化成文字背景資料
+                context_parts = []
+                if course_rows:
+                    lines = ["【課程清單（未來60天）】"]
+                    for r in course_rows:
+                        cat = f"[{r['category']}] " if r.get("category") else ""
+                        loc = f" / 地點：{r['location']}" if r.get("location") else ""
+                        desc = f" / 說明：{r['description']}" if r.get("description") else ""
+                        lines.append(f"- {r['course_date']} {r['course_time']} {cat}{r['title']}{loc}{desc}")
+                    context_parts.append("\n".join(lines))
+
+                if broadcast_rows:
+                    lines = ["【排程廣播（啟用中）】"]
+                    for r in broadcast_rows:
+                        next_run = str(r["next_run"])[:16] if r.get("next_run") else "未知"
+                        end_time = f" 至 {str(r['end_time'])[:16]}" if r.get("end_time") else ""
+                        lines.append(f"- 【{r['title']}】下次發送：{next_run}{end_time}")
+                        lines.append(f"  內容：{str(r['content'])[:80]}")
+                    context_parts.append("\n".join(lines))
+
+                db_context = "\n\n".join(context_parts)
+                if db_context:
+                    db_context = f"\n\n[你擁有以下背景資料，請優先根據這些資料回答，若問題與資料無關則正常回答]\n{db_context}\n"
+
                 # 判斷目前是餓感模式還是開朗模式
                 is_hungry_mode = (
                     (6  <= current_hour <= 8)  or   # 早餐
@@ -1529,7 +1583,7 @@ def handle_text(event, bot_key: str = ""):
 用繁體中文回覆。
 """
                 raw = gemini_call(
-                    f"{IPAPA_PERSONA}\n現在是 {today} {now.strftime('%H:%M')}（台灣時間）。\n\n使用者問：{clean_text}",
+                    f"{IPAPA_PERSONA}{db_context}\n現在是 {today} {now.strftime('%H:%M')}（台灣時間）。\n\n使用者問：{clean_text}",
                     max_tokens=800
                 )
 
