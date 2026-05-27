@@ -1550,6 +1550,8 @@ def handle_text(event, bot_key: str = ""):
                                 [f"%{c}%" for c in matched_categories] +   # c.title
                                 [today]
                             )
+                            two_months_later = (now + __import__('datetime').timedelta(days=365)).date().isoformat()
+                            params[-1:] = [today, two_months_later]  # 替換最後的 today，並加上上限
                             _cur.execute(f"""
                                 SELECT c.title, c.course_date::text, c.course_time,
                                        c.location, cat.name AS category
@@ -1557,21 +1559,24 @@ def handle_text(event, bot_key: str = ""):
                                 LEFT JOIN categories cat ON c.category_id = cat.id
                                 WHERE ({cat_conditions})
                                   AND c.course_date >= %s
+                                  AND c.course_date <= %s
                                 ORDER BY c.course_date ASC
-                                LIMIT 8
+                                LIMIT 50
                             """, params)
                             label = f"近期{clean_text[:6].strip()}"
                         else:
-                            # 通用查詢：查全部
+                            # 通用查詢：近兩個月
+                            two_months_later = (now + __import__('datetime').timedelta(days=365)).date().isoformat()
                             _cur.execute("""
                                 SELECT c.title, c.course_date::text, c.course_time,
                                        c.location, cat.name AS category
                                 FROM courses c
                                 LEFT JOIN categories cat ON c.category_id = cat.id
                                 WHERE c.course_date >= %s
+                                  AND c.course_date <= %s
                                 ORDER BY c.course_date ASC
-                                LIMIT 8
-                            """, (today,))
+                                LIMIT 50
+                            """, (today, two_months_later))
                             label = "近期行程"
 
                         rows = _cur.fetchall()
@@ -1636,8 +1641,8 @@ def handle_text(event, bot_key: str = ""):
                         LEFT JOIN categories cat ON c.category_id = cat.id
                         WHERE c.course_date >= %s AND c.course_date <= %s
                         ORDER BY c.course_date ASC
-                        LIMIT 20
-                    """, (today, (now + __import__('datetime').timedelta(days=60)).date().isoformat()))
+                        LIMIT 50
+                    """, (today, (now + __import__('datetime').timedelta(days=365)).date().isoformat()))
                     course_rows = _cur.fetchall()
 
                     # 目前啟用中的排程廣播
