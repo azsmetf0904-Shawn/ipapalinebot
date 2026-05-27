@@ -286,6 +286,17 @@ def init_db():
             created_at   TIMESTAMPTZ NOT NULL
         );
         ALTER TABLE broadcast_schedule_entries ADD COLUMN IF NOT EXISTS bot_key TEXT DEFAULT '';
+
+        CREATE TABLE IF NOT EXISTS chat_memory (
+            id         SERIAL PRIMARY KEY,
+            user_id    TEXT NOT NULL,
+            group_id   TEXT NOT NULL,
+            role       TEXT NOT NULL,        -- 'user' 或 'assistant'
+            content    TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS chat_memory_lookup
+            ON chat_memory (user_id, group_id, created_at DESC);
     """)
     # 預設分類
     for name, color in [("招商活動","#FF6B35"),("系統會議","#1A73E8"),("課程培訓","#06C755"),("其他","#9E9E9E")]:
@@ -297,6 +308,48 @@ def init_db():
     logger.info("DB initialized (PostgreSQL)")
 
 init_db()
+
+# ── 對話記憶函式 ──
+def get_chat_memory(user_id: str, group_id: str, limit: int = 3) -> list[dict]:
+    """取得最近 N 輪對話（每輪 = user + assistant 各一則）"""
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("""
+            SELECT role, content FROM chat_memory
+            WHERE user_id = %s AND group_id = %s
+            ORDER BY created_at DESC
+            LIMIT %s
+        """, (user_id, group_id, limit * 2))
+        rows = cur.fetchall()
+        cur.close(); conn.close()
+        return list(reversed([{"role": r["role"], "content": r["content"]} for r in rows]))
+    except Exception as e:
+        logger.warning(f"[Memory] get failed: {e}")
+        return []
+
+def save_chat_memory(user_id: str, group_id: str, user_msg: str, assistant_msg: str):
+    """儲存一輪對話，並自動清理超過 3 輪的舊記憶"""
+    try:
+        conn = get_db(); cur = conn.cursor()
+        now = isonow()
+        cur.execute("""
+            INSERT INTO chat_memory (user_id, group_id, role, content, created_at)
+            VALUES (%s,%s,'user',%s,%s), (%s,%s,'assistant',%s,%s)
+        """, (user_id, group_id, user_msg, now,
+              user_id, group_id, assistant_msg, now))
+        cur.execute("""
+            DELETE FROM chat_memory
+            WHERE user_id = %s AND group_id = %s
+              AND id NOT IN (
+                  SELECT id FROM chat_memory
+                  WHERE user_id = %s AND group_id = %s
+                  ORDER BY created_at DESC
+                  LIMIT 6
+              )
+        """, (user_id, group_id, user_id, group_id))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        logger.warning(f"[Memory] save failed: {e}")
 
 # ── 工具函式 ──
 def unit_to_seconds(value, unit: str) -> float:
@@ -1663,8 +1716,19 @@ def handle_text(event, bot_key: str = ""):
 
 用繁體中文，短句，有節奏感。"""
 
+                # ── 讀取此用戶在此群組的對話記憶 ──
+                gid = event["source"].get("groupId", "")
+                memory = get_chat_memory(user_id, gid, limit=3)
+                memory_text = ""
+                if memory:
+                    lines = ["[這位用戶最近的對話記憶]"]
+                    for m in memory:
+                        role_label = "用戶" if m["role"] == "user" else "羊駝"
+                        lines.append(f"{role_label}：{m['content']}")
+                    memory_text = "\n" + "\n".join(lines) + "\n"
+
                 raw = gemini_call(
-                    f"{IPAPA_PERSONA}{db_context}\n現在：{today} {now.strftime('%H:%M')}（台灣時間）\n使用者問：{clean_text}",
+                    f"{IPAPA_PERSONA}{db_context}{memory_text}\n現在：{today} {now.strftime('%H:%M')}（台灣時間）\n使用者問：{clean_text}",
                     max_tokens=300
                 )
 
@@ -1672,6 +1736,10 @@ def handle_text(event, bot_key: str = ""):
                 parts = raw.split("---SPLIT---", 1)
                 msg1 = parts[0].strip()
                 msg2 = parts[1].strip() if len(parts) > 1 else ""
+
+                # ── 儲存這輪對話到記憶 ──
+                assistant_record = msg1 + ("\n" + msg2 if msg2 else "")
+                save_chat_memory(user_id, gid, clean_text, assistant_record)
 
             except Exception as e:
                 msg1 = "咕嚕…\n我剛才發呆太久了\n稍後再問我一次\n咕…"
