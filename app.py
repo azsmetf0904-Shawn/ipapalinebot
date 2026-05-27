@@ -909,14 +909,16 @@ scheduler.add_job(check_broadcast_schedule_entries, "interval", minutes=5,
 
 # ── 羊駝發呆訊息排程 ──
 WANDER_MESSAGES = [
-    "咕嚕…今天有點安靜\n大家都在忙嗎",
-    "咕…不知道大家在幹嘛\n咕嚕嚕～",
-    "咕哇～\n剛才發呆了一下\n咕…",
-    "嗚咕…\n突然想到\n大家吃飯了嗎",
-    "咕嚕咕嚕～\n今天過得怎麼樣\n咕～",
-    "咕…\n我在這裡喔\n只是有點發呆",
-    "噗咕～\n外面天氣怎樣\n咕嚕…",
-    "咕嘟～\n剛剛在想事情\n忘記想什麼了",
+    "咕嚕…\n今天陽光不錯\n我在院子曬太陽\n大家在幹嘛",
+    "噗咕～\n剛從夜市回來\n有點飽\n咕…",
+    "咕哇～\n剛才坐車發呆\n忘記要去哪\n咕嚕…",
+    "咕…\n拍廣告有點累\n休息一下\n大家還好嗎",
+    "咕嚕咕嚕～\n今天有記者來拍我\n我裝作沒在看\n咕～",
+    "嗚咕…\n突然想到\n大家有沒有什麼行程要我幫忙查",
+    "咕嘟～\n我剛吃完草\n有點想睡\n你們呢",
+    "噗咕～\n今天安靜\n是大家都出去了嗎\n咕…",
+    "咕嚕…\n有人說我比主人還紅\n我假裝沒聽到\n咕哇～",
+    "咕…\n剛才有人拍我照片\n我給他擺了個帥pose\n咕嚕嚕",
 ]
 
 ALPACA_WANDER_ENABLED = True   # 全域總開關（可由環境變數控制）
@@ -931,11 +933,11 @@ _tired_state = {
 }
 
 TIRED_MESSAGES = [
-    "咕嚕…有點累\n等我休息一下",
-    "咕…今天話說太多了\n明天再聊",
-    "嗚咕…\n我需要睡一下\n咕",
-    "咕嚕嚕…\n好累喔\n改天再說",
-    "咕…\n撐不住了\n掰掰",
+    "咕嚕…\n今天行程太多了\n我先去睡\n明天再說",
+    "咕…\n拍太多照片了\n眼睛要閉一下\n咕",
+    "嗚咕…\n坐了一整天的車\n累了\n明天繼續",
+    "咕嚕嚕…\n夜市逛太晚\n先休息\n咕…",
+    "咕…\n撐不住了\n我去草地上趴著\n掰掰",
 ]
 
 def is_tired_mode() -> bool:
@@ -2262,10 +2264,9 @@ def handle_text(event, bot_key: str = ""):
                         clean_text = (clean_text[:s] + clean_text[s + l:]).strip()
 
             if not clean_text:
-                # @羊駝 後面沒有文字 → 發 postback 選單讓使用者選
                 reply_with_postback_menu(
                     reply_token,
-                    "咕嚕～？\n想查什麼呢～",
+                    "咕嚕～？\n叫我有什麼事嗎\n想查什麼直接選就好 👇",
                     bot_key=bot_key
                 )
                 return
@@ -2315,7 +2316,7 @@ def handle_text(event, bot_key: str = ""):
                         rows = _cur.fetchall()
                         if rows:
                             type_label = "、".join(dict.fromkeys(_specific_types))  # 去重
-                            reply_lines.append(f"咕嚕咕嚕～\n幫你找了一下「{type_label[:20]}」相關活動\n")
+                            reply_lines.append(f"咕嚕咕嚕～\n我查了一下「{type_label[:20]}」相關的\n")
                             for r in rows:
                                 cat = f"[{r['category']}] " if r.get("category") else ""
                                 loc = f"\n   📍 {r['location']}" if r.get("location") else ""
@@ -2331,10 +2332,10 @@ def handle_text(event, bot_key: str = ""):
                                     f"📅 {r['course_date']} {r['course_time']} {cat}{r['title']}"
                                     f"{loc}{link_line}"
                                 )
-                            reply_lines.append("\n咕嘟～有需要再問我")
+                            reply_lines.append("\n咕嘟～這幾場記好哦")
                         else:
                             type_label = "、".join(dict.fromkeys(_specific_types))
-                            reply_lines.append(f"咕嚕～\n找不到近期的「{type_label[:20]}」相關活動\n咕…")
+                            reply_lines.append(f"咕嚕～\n「{type_label[:20]}」近期好像沒有排\n咕…")
 
                     if is_course_query and not is_specific_query:
                         _cur.execute("""
@@ -2348,7 +2349,7 @@ def handle_text(event, bot_key: str = ""):
                         """, (today,))
                         rows = _cur.fetchall()
                         if rows:
-                            reply_lines.append("咕嚕咕嚕～\n幫你整理一下近期的課\n")
+                            reply_lines.append("咕嚕咕嚕～\n近期的行程我整理一下\n")
                             for r in rows:
                                 cat = f"[{r['category']}] " if r.get("category") else ""
                                 loc = f"\n   📍 {r['location']}" if r.get("location") else ""
@@ -2361,9 +2362,9 @@ def handle_text(event, bot_key: str = ""):
                                     f"📅 {r['course_date']} {r['course_time']} {cat}{r['title']}"
                                     f"{loc}{link_line}"
                                 )
-                            reply_lines.append("\n咕嘟～記得去")
+                            reply_lines.append("\n咕嘟～這幾場都記好哦")
                         else:
-                            reply_lines.append("咕嚕～\n最近好像沒有課\n咕…")
+                            reply_lines.append("咕嚕～\n近期好像沒有排課\n咕…")
 
                     if is_broadcast_query:
                         _cur.execute("""
@@ -2376,22 +2377,21 @@ def handle_text(event, bot_key: str = ""):
                         rows = _cur.fetchall()
                         if rows:
                             if reply_lines:
-                                reply_lines.append("")  # 空行分隔
-                            reply_lines.append("嗚咕～\n最新公告整理一下\n")
+                                reply_lines.append("")
+                            reply_lines.append("嗚咕～\n最新公告在這\n")
                             for r in rows:
                                 next_run = str(r["next_run"])[:16] if r.get("next_run") else ""
                                 reply_lines.append(f"📢 {r['title']}")
                                 reply_lines.append(f"   {str(r['content'])[:60]}")
                                 if next_run:
                                     reply_lines.append(f"   🕐 {next_run}")
-                            reply_lines.append("\n咕～")
+                            reply_lines.append("\n咕嘟～")
                         else:
                             if not reply_lines:
                                 reply_lines.append("咕嚕～\n目前沒有公告\n咕…")
 
-                    # 若三種查詢都沒結果才 fallback
                     if not reply_lines:
-                        reply_lines.append("咕嚕～\n沒找到相關資料\n咕…")
+                        reply_lines.append("咕嚕～\n查了一下沒找到相關資料\n咕…")
 
                     _cur.close(); _conn.close()
 
@@ -2586,7 +2586,7 @@ def handle_text(event, bot_key: str = ""):
                     logger.warning(f"[ChatLog] write failed: {le}")
 
             except Exception as e:
-                msg1 = "咕嚕…\n我剛才發呆太久了\n稍後再問我一次\n咕…"
+                msg1 = "咕嚕…\n我剛才在想事情想太遠了\n稍後再問我一次\n咕…"
                 msg2 = ""
 
             # 一次 reply 送出最多兩則訊息（完全免費，不消耗 push 額度）
@@ -2703,10 +2703,12 @@ def handle_join(event, bot_key: str = ""):
     # ── 自我介紹 ──
     intro = (
         "咕嚕咕嚕～大家好 🦙\n"
-        "我是 IPAPA 羊駝，負責幫大家查課程、會議、招商、內訓的時間地點和連結～\n\n"
+        "我是麥可，王宥忻養的那隻羊駝\n"
+        "平常坐特斯拉、逛夜市、偶爾接代言\n"
+        "現在跑來幫大家管行程了\n\n"
         "叫我很簡單：@我 或 reply 我的訊息就好\n"
-        "例如：「@羊駝 這週有什麼會議？」\n\n"
-        "咕嘟～我是溫柔的羊駝，請大家輕聲問我、溫柔對待我 🙏"
+        "例如：「@麥可 這週有什麼會議？」\n\n"
+        "咕嘟～有什麼行程要查，直接問我就好 🦙"
     )
     try:
         # 第一則：自我介紹；第二則：Postback Quick Reply（按下不在群組顯示文字，體驗更乾淨）
@@ -2718,7 +2720,7 @@ def handle_join(event, bot_key: str = ""):
                 {"type": "text", "text": intro},
                 {
                     "type": "text",
-                    "text": "咕嚕～先來試試看？",
+                    "text": "咕嚕～先試試看？想查什麼都可以問我 👇",
                     "quickReply": {"items": _make_postback_qr_items()}
                 }
             ]},
@@ -2832,7 +2834,7 @@ def handle_postback(event, bot_key: str = ""):
             rows = _cur.fetchall()
             if rows:
                 type_label = "、".join(dict.fromkeys(_specific_types))
-                reply_lines.append(f"咕嚕咕嚕～\n幫你找了一下「{type_label[:20]}」相關活動\n")
+                reply_lines.append(f"咕嚕咕嚕～\n我查了一下「{type_label[:20]}」相關的\n")
                 for r in rows:
                     cat  = f"[{r['category']}] " if r.get("category") else ""
                     loc  = f"\n   📍 {r['location']}" if r.get("location") else ""
@@ -2840,10 +2842,10 @@ def handle_postback(event, bot_key: str = ""):
                     links = re.findall(r'https?://\S+', desc)
                     link_line = ("\n   🔗 " + "\n   🔗 ".join(links[:2])) if links else (f"\n   💬 {desc.strip()[:80]}" if desc.strip() else "")
                     reply_lines.append(f"📅 {r['course_date']} {r['course_time']} {cat}{r['title']}{loc}{link_line}")
-                reply_lines.append("\n咕嘟～有需要再問我")
+                reply_lines.append("\n咕嘟～這幾場記好哦")
             else:
                 type_label = "、".join(dict.fromkeys(_specific_types))
-                reply_lines.append(f"咕嚕～\n找不到近期的「{type_label[:20]}」相關活動\n咕…")
+                reply_lines.append(f"咕嚕～\n「{type_label[:20]}」近期好像沒有排\n咕…")
 
         if is_course_query and not is_specific_query:
             _cur.execute("""
@@ -2856,7 +2858,7 @@ def handle_postback(event, bot_key: str = ""):
             """, (today,))
             rows = _cur.fetchall()
             if rows:
-                reply_lines.append("咕嚕咕嚕～\n幫你整理一下近期的課\n")
+                reply_lines.append("咕嚕咕嚕～\n近期的行程我整理一下\n")
                 for r in rows:
                     cat  = f"[{r['category']}] " if r.get("category") else ""
                     loc  = f"\n   📍 {r['location']}" if r.get("location") else ""
@@ -2864,9 +2866,9 @@ def handle_postback(event, bot_key: str = ""):
                     links = re.findall(r'https?://\S+', desc)
                     link_line = ("\n   🔗 " + "\n   🔗 ".join(links[:2])) if links else ""
                     reply_lines.append(f"📅 {r['course_date']} {r['course_time']} {cat}{r['title']}{loc}{link_line}")
-                reply_lines.append("\n咕嘟～記得去")
+                reply_lines.append("\n咕嘟～這幾場都記好哦")
             else:
-                reply_lines.append("咕嚕～\n最近好像沒有課\n咕…")
+                reply_lines.append("咕嚕～\n近期好像沒有排課\n咕…")
 
         if is_broadcast_query:
             _cur.execute("""
@@ -2877,19 +2879,19 @@ def handle_postback(event, bot_key: str = ""):
             if rows:
                 if reply_lines:
                     reply_lines.append("")
-                reply_lines.append("嗚咕～\n最新公告整理一下\n")
+                reply_lines.append("嗚咕～\n最新公告在這\n")
                 for r in rows:
                     next_run = str(r["next_run"])[:16] if r.get("next_run") else ""
                     reply_lines.append(f"📢 {r['title']}")
                     reply_lines.append(f"   {str(r['content'])[:60]}")
                     if next_run:
                         reply_lines.append(f"   🕐 {next_run}")
-                reply_lines.append("\n咕～")
+                reply_lines.append("\n咕嘟～")
             elif not reply_lines:
                 reply_lines.append("咕嚕～\n目前沒有公告\n咕…")
 
         if not reply_lines:
-            reply_lines.append("咕嚕～\n沒找到相關資料\n咕…")
+            reply_lines.append("咕嚕～\n查了一下沒找到相關資料\n咕…")
 
         _cur.close(); _conn.close()
         msg = "\n".join(reply_lines)
@@ -2910,7 +2912,7 @@ def handle_postback(event, bot_key: str = ""):
 
     except Exception as e:
         logger.error(f"[Postback] handler error: {e}")
-        reply_message(reply_token, "咕嚕…\n查詢時出了點狀況\n稍後再試試\n咕…", bot_key=bot_key)
+        reply_message(reply_token, "咕嚕…\n我剛才在想事情\n查詢出了點狀況\n稍後再試試\n咕…", bot_key=bot_key)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
