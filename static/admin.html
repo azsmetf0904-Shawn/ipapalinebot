@@ -214,6 +214,7 @@ textarea{resize:vertical;min-height:72px}
       <div class="nav-sep"></div>
       <button class="nav-item" onclick="go('groups',this)"><i class="ti ti-users"></i> 群組管理</button>
       <button class="nav-item" onclick="go('categories',this)"><i class="ti ti-tag"></i> 分類管理</button>
+      <button class="nav-item" onclick="go('quickreply',this)"><i class="ti ti-message-bolt"></i> 快速回覆</button>
       <button class="nav-item" onclick="go('wander',this)"><i class="ti ti-mood-happy"></i> 羊駝發呆</button>
       <button class="nav-item" onclick="go('tired',this)"><i class="ti ti-moon"></i> 疲累模式</button>
       <button class="nav-item" onclick="go('chatlogs',this)"><i class="ti ti-message-2"></i> 對話紀錄</button>
@@ -686,7 +687,62 @@ textarea{resize:vertical;min-height:72px}
         </div>
       </div>
 
-      <!-- SETTINGS -->
+
+      <!-- QUICK REPLY BUTTONS -->
+      <div id="panel-quickreply" class="panel">
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title"><i class="ti ti-message-bolt"></i> 快速回覆按鈕管理</span>
+            <button class="btn btn-primary btn-sm" onclick="openQrModal()"><i class="ti ti-plus"></i> 新增按鈕</button>
+          </div>
+          <p style="font-size:12px;color:#999;margin-bottom:16px">LINE Quick Reply 最多顯示 13 個按鈕，依排序順序排列。</p>
+          <div id="qr-list">
+            <div style="color:#999;font-size:13px;text-align:center;padding:32px">載入中…</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- QR Modal -->
+      <div id="qr-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1000;align-items:center;justify-content:center">
+        <div style="background:#fff;border-radius:14px;padding:24px;width:480px;max-width:95vw;max-height:90vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,.18)">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+            <span style="font-size:15px;font-weight:600" id="qr-modal-title">新增按鈕</span>
+            <button onclick="closeQrModal()" style="border:none;background:none;cursor:pointer;font-size:20px;color:#999;line-height:1">×</button>
+          </div>
+          <input type="hidden" id="qr-id">
+          <div class="fg">
+            <label>按鈕名稱 * <span style="font-size:11px;color:#aaa">（LINE 最多顯示 20 字）</span></label>
+            <input id="qr-label" placeholder="例：會議、招商＆內訓" maxlength="20">
+          </div>
+          <div class="fg">
+            <label>按鈕類型</label>
+            <select id="qr-type" onchange="onQrTypeChange()">
+              <option value="tag">標籤查詢（查有對應標籤的課程）</option>
+              <option value="all_courses">近期課程（列出所有近期課程）</option>
+              <option value="announcement">最新公告</option>
+            </select>
+          </div>
+          <div class="fg" id="qr-tags-group">
+            <label>對應標籤 <span style="font-size:11px;color:#aaa">（逗號分隔，可多個）</span></label>
+            <input id="qr-tags" placeholder="例：會議,線上,開會">
+            <div style="font-size:11px;color:#aaa;margin-top:4px">使用者按此按鈕，系統會查詢課程名稱或說明中含有這些標籤的課程</div>
+          </div>
+          <div class="fg" style="max-width:120px">
+            <label>排序（小的在前）</label>
+            <input id="qr-sort" type="number" value="0" min="0">
+          </div>
+          <div class="fg" style="flex-direction:row;align-items:center;gap:10px;margin-bottom:0">
+            <label style="margin-bottom:0">啟用</label>
+            <input id="qr-active" type="checkbox" checked style="width:auto;accent-color:#06C755">
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px">
+            <button class="btn" onclick="closeQrModal()">取消</button>
+            <button class="btn btn-primary" onclick="saveQrButton()"><i class="ti ti-device-floppy"></i> 儲存</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- WANDER -->
       <div id="panel-wander" class="panel">
         <div class="card">
           <div class="card-head">
@@ -998,7 +1054,7 @@ function logout(){
 }
 
 // ── Navigation ──
-const titles = {dashboard:'總覽',courses:'課程管理',broadcast:'立即公告',scheduled:'排程廣播',groups:'群組管理',categories:'分類管理',wander:'羊駝發呆',tired:'疲累模式',chatlogs:'對話紀錄',chatstats:'熱門問題',settings:'設定'};
+const titles = {dashboard:'總覽',courses:'課程管理',broadcast:'立即公告',scheduled:'排程廣播',groups:'群組管理',categories:'分類管理',quickreply:'快速回覆',wander:'羊駝發呆',tired:'疲累模式',chatlogs:'對話紀錄',chatstats:'熱門問題',settings:'設定'};
 function go(id, btn){
   document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
@@ -1013,6 +1069,7 @@ function go(id, btn){
   if(id==='groups') loadGroups();
   if(id==='categories') loadCategories();
   if(id==='settings') loadSettings();
+  if(id==='quickreply') loadQrButtons();
   if(id==='wander') loadWander();
   if(id==='tired') loadTired();
   if(id==='chatlogs') loadChatLogs(1);
@@ -2647,6 +2704,123 @@ async function saveWanderGroup(groupId){
   });
   toast('已儲存', 'ok');
 }
+
+
+// ── Quick Reply 按鈕管理 ──
+let _qrButtons = [];
+
+async function loadQrButtons(){
+  const res = await api('/admin/quick-reply-buttons');
+  _qrButtons = res.buttons || [];
+  renderQrList();
+}
+
+function renderQrList(){
+  const el = document.getElementById('qr-list');
+  if(!_qrButtons.length){
+    el.innerHTML = `<div style="text-align:center;color:#aaa;padding:32px;font-size:13px"><i class="ti ti-click" style="font-size:28px;display:block;margin-bottom:8px"></i>還沒有任何按鈕，點「新增按鈕」開始設定</div>`;
+    return;
+  }
+  const typeLabel = {tag:'標籤查詢', all_courses:'近期課程', announcement:'最新公告'};
+  const typeColor = {tag:'bg-blue', all_courses:'bg-green', announcement:'bg-orange'};
+  el.innerHTML = `<table class="tbl">
+    <thead><tr>
+      <th style="width:40px">排序</th>
+      <th>按鈕名稱</th>
+      <th>類型</th>
+      <th>對應標籤</th>
+      <th style="width:60px">狀態</th>
+      <th style="width:100px">操作</th>
+    </tr></thead>
+    <tbody>
+    ${_qrButtons.map(b=>{
+      const tags = b.tags ? b.tags.split(',').filter(t=>t.trim()).map(t=>`<span style="background:#F0F4FF;color:#1A5CC4;border-radius:20px;padding:2px 8px;font-size:11px;margin-right:3px">${esc(t.trim())}</span>`).join('') : '<span style="color:#ccc;font-size:11px">—</span>';
+      return `<tr>
+        <td style="color:#aaa;font-size:12px;text-align:center">${b.sort_order}</td>
+        <td><strong>${esc(b.label)}</strong></td>
+        <td><span class="badge ${typeColor[b.btn_type]||'bg-gray'}">${typeLabel[b.btn_type]||b.btn_type}</span></td>
+        <td>${tags}</td>
+        <td>
+          <button onclick="toggleQrActive(${b.id},${!b.active})" class="toggle${b.active?' on':''}" title="${b.active?'停用':'啟用'}"></button>
+        </td>
+        <td style="white-space:nowrap">
+          <button class="btn btn-sm" onclick="editQrButton(${b.id})" style="margin-right:4px"><i class="ti ti-pencil"></i></button>
+          <button class="btn btn-sm btn-danger" onclick="deleteQrButton(${b.id})"><i class="ti ti-trash"></i></button>
+        </td>
+      </tr>`;
+    }).join('')}
+    </tbody>
+  </table>
+  <div style="margin-top:12px;font-size:11px;color:#aaa">共 ${_qrButtons.length} 個按鈕（LINE 上限 13 個）</div>`;
+}
+
+function openQrModal(btn=null){
+  document.getElementById('qr-modal-title').textContent = btn ? '編輯按鈕' : '新增按鈕';
+  document.getElementById('qr-id').value      = btn ? btn.id : '';
+  document.getElementById('qr-label').value   = btn ? btn.label : '';
+  document.getElementById('qr-type').value    = btn ? btn.btn_type : 'tag';
+  document.getElementById('qr-tags').value    = btn ? btn.tags : '';
+  document.getElementById('qr-sort').value    = btn ? btn.sort_order : _qrButtons.length;
+  document.getElementById('qr-active').checked = btn ? btn.active : true;
+  onQrTypeChange();
+  document.getElementById('qr-modal').style.display='flex';
+}
+
+function closeQrModal(){
+  document.getElementById('qr-modal').style.display='none';
+}
+
+function onQrTypeChange(){
+  const t = document.getElementById('qr-type').value;
+  document.getElementById('qr-tags-group').style.display = (t==='tag') ? 'flex' : 'none';
+}
+
+function editQrButton(id){
+  const btn = _qrButtons.find(b=>b.id===id);
+  if(btn) openQrModal(btn);
+}
+
+async function saveQrButton(){
+  const id     = document.getElementById('qr-id').value;
+  const label  = document.getElementById('qr-label').value.trim();
+  const btn_type = document.getElementById('qr-type').value;
+  const tags   = document.getElementById('qr-tags').value.trim();
+  const sort_order = parseInt(document.getElementById('qr-sort').value)||0;
+  const active = document.getElementById('qr-active').checked;
+  if(!label){ toast('請填寫按鈕名稱','err'); return; }
+  if(btn_type==='tag' && !tags){ toast('標籤查詢類型請至少填一個標籤','err'); return; }
+  const payload = {label, btn_type, tags, sort_order, active};
+  let res;
+  if(id){
+    res = await api(`/admin/quick-reply-buttons/${id}`,{method:'PUT',body:JSON.stringify(payload)});
+  } else {
+    res = await api('/admin/quick-reply-buttons',{method:'POST',body:JSON.stringify(payload)});
+  }
+  if(res.ok){ toast(id?'已更新':'已新增','ok'); closeQrModal(); loadQrButtons(); }
+  else toast(res.error||'儲存失敗','err');
+}
+
+async function deleteQrButton(id){
+  const btn = _qrButtons.find(b=>b.id===id);
+  if(!btn || !confirm(`確定刪除「${btn.label}」按鈕？`)) return;
+  const res = await api(`/admin/quick-reply-buttons/${id}`,{method:'DELETE'});
+  if(res.ok){ toast('已刪除','ok'); loadQrButtons(); }
+  else toast('刪除失敗','err');
+}
+
+async function toggleQrActive(id, newActive){
+  const btn = _qrButtons.find(b=>b.id===id);
+  if(!btn) return;
+  const payload = {label:btn.label, btn_type:btn.btn_type, tags:btn.tags, sort_order:btn.sort_order, active:newActive};
+  const res = await api(`/admin/quick-reply-buttons/${id}`,{method:'PUT',body:JSON.stringify(payload)});
+  if(res.ok){ toast(newActive?'已啟用':'已停用','ok'); loadQrButtons(); }
+  else toast('操作失敗','err');
+}
+
+// 點 modal 背景關閉
+document.getElementById('qr-modal').addEventListener('click', function(e){
+  if(e.target===this) closeQrModal();
+});
 
 // ── Init ──
 loadBots();
