@@ -206,21 +206,83 @@ def fetch_group_name(group_id: str, bot_key: str = "") -> str:
     return ""
 
 # ── PostgreSQL 連線 ──
+from psycopg2 import pool as psycopg2_pool
+from contextlib import contextmanager
+
+# ── Connection Pool（最小 1 條、最大 10 條，單 worker 多執行緒安全）──
+# Railway 免費版 PostgreSQL 上限約 20~25 條，max 設 10 保留空間給排程任務
+_db_url = urlparse(DATABASE_URL)
+_DB_POOL = psycopg2_pool.ThreadedConnectionPool(
+    minconn=1,
+    maxconn=10,
+    host=_db_url.hostname,
+    port=_db_url.port or 5432,
+    dbname=_db_url.path.lstrip("/"),
+    user=_db_url.username,
+    password=_db_url.password,
+    sslmode="require",
+    cursor_factory=RealDictCursor,
+    connect_timeout=10,
+)
+
+class _PooledConn:
+    """Connection wrapper：呼叫 close() 時將連線歸還到 pool，而不是真正關閉。
+    這讓所有現有的 conn.close() 呼叫點無需修改，同時也能正確歸還連線。"""
+    __slots__ = ("_conn",)
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def close(self):
+        try:
+            _DB_POOL.putconn(self._conn)
+        except Exception as e:
+            logger.warning(f"[DB] putconn failed: {e}")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, *_):
+        if exc_type:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+        self.close()
+
+
 def get_db():
-    """每次請求建立新連線（Railway 不需 connection pool 設定）"""
-    url = urlparse(DATABASE_URL)
-    conn = psycopg2.connect(
-        host=url.hostname,
-        port=url.port or 5432,
-        dbname=url.path.lstrip("/"),
-        user=url.username,
-        password=url.password,
-        sslmode="require",
-        cursor_factory=RealDictCursor,
-        connect_timeout=10,
-    )
+    """從連線池取出一條連線（以 _PooledConn 包裝）。
+    呼叫方 conn.close() 時連線歸還 pool，不會真正關閉。
+    即使沒有 try/finally，只要有呼叫 conn.close()，連線就不會洩漏。"""
+    conn = _DB_POOL.getconn()
     conn.autocommit = False
-    return conn
+    return _PooledConn(conn)
+
+@contextmanager
+def db_conn():
+    """Context manager：自動從 pool 取得連線，離開時無論是否發生例外都歸還。
+    用法：
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ...
+            conn.commit()
+    """
+    conn = _DB_POOL.getconn()
+    conn.autocommit = False
+    try:
+        yield conn
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        _DB_POOL.putconn(conn)
 
 def init_db():
     conn = get_db()
@@ -2858,14 +2920,9 @@ def delete_quick_reply_button(bid):
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok":True})
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    sig = request.headers.get("X-Line-Signature","")
-    body = request.get_data()
-    bot_key = find_bot_by_signature(body, sig)
-    if not bot_key:
-        abort(400)
-    for event in json.loads(body).get("events",[]):
+def _process_events(events: list, bot_key: str):
+    """在背景執行緒中處理所有 LINE 事件，避免 Webhook 5 秒逾時。"""
+    for event in events:
         t = event.get("type")
         try:
             if t == "message" and event["message"]["type"] == "text":
@@ -2877,7 +2934,22 @@ def webhook():
             elif t == "leave":
                 handle_leave(event)
         except Exception as e:
-            logger.error(f"Event handler error: {e}")
+            logger.error(f"Event handler error (type={t}): {e}")
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    sig = request.headers.get("X-Line-Signature","")
+    body = request.get_data()
+    bot_key = find_bot_by_signature(body, sig)
+    if not bot_key:
+        abort(400)
+
+    events = json.loads(body).get("events", [])
+    if events:
+        # 立刻在背景處理；LINE 只要求在 5 秒內收到 200，不需要等處理完
+        t = threading.Thread(target=_process_events, args=(events, bot_key), daemon=True)
+        t.start()
+
     return "OK"
 
 # ── Postback 事件處理（Quick Reply 按鈕觸發）──
