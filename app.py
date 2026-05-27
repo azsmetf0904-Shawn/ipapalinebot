@@ -1444,21 +1444,22 @@ def handle_text(event, bot_key: str = ""):
         finally:
             cur.close(); conn.close()
 
-        # ── 偵測群組成員 @mention 機器人 → AI 回覆 ──
+        # ── 偵測觸發條件：@mention 或 quote reply ──
         mentionees = msg_obj.get("mention", {}).get("mentionees", [])
         is_mentioned = any(m.get("type") == "user" and m.get("isSelf") for m in mentionees)
+        is_quote_reply = bool(msg_obj.get("quotedMessageId"))
 
-        if is_mentioned:
+        if is_mentioned or is_quote_reply:
             # 將訊息中所有 @機器人 的片段移除，取得純問題文字
             clean_text = text
-            # 由後往前刪除，避免 index 位移
-            for m in sorted(mentionees, key=lambda x: x.get("index", 0), reverse=True):
-                if m.get("isSelf"):
-                    s, l = m.get("index", 0), m.get("length", 0)
-                    clean_text = (clean_text[:s] + clean_text[s + l:]).strip()
+            if is_mentioned:
+                for m in sorted(mentionees, key=lambda x: x.get("index", 0), reverse=True):
+                    if m.get("isSelf"):
+                        s, l = m.get("index", 0), m.get("length", 0)
+                        clean_text = (clean_text[:s] + clean_text[s + l:]).strip()
 
             if not clean_text:
-                reply_message(reply_token, "你好！有什麼我可以幫助你的嗎？😊", bot_key=bot_key)
+                reply_message(reply_token, "咕嚕～？", bot_key=bot_key)
                 return
 
             logger.info(f"[AI Mention] user={user_id} question={clean_text[:50]!r}")
