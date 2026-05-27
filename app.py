@@ -496,6 +496,12 @@ def init_db():
             updated_at   TIMESTAMPTZ NOT NULL
         );
         CREATE UNIQUE INDEX IF NOT EXISTS bot_persona_bot_key ON bot_persona (bot_key);
+
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key        TEXT PRIMARY KEY,
+            value      TEXT NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL
+        );
     """)
     # 預設分類
     for name, color in [("招商活動","#FF6B35"),("系統會議","#1A73E8"),("課程培訓","#06C755"),("其他","#9E9E9E")]:
@@ -1142,16 +1148,51 @@ WANDER_MESSAGES = [
     "咕…\n剛才有人拍我照片\n我給他擺了個帥pose\n咕嚕嚕",
 ]
 
-ALPACA_WANDER_ENABLED = True   # 全域總開關（可由環境變數控制）
+# ── app_settings：輕量 key-value 持久化（tired_hour、wander_global 等）──
+def get_setting(key: str, default: str = "") -> str:
+    """從 DB 讀一個設定值；失敗時回傳 default。"""
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT value FROM app_settings WHERE key=%s", (key,))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        return row["value"] if row else default
+    except Exception as e:
+        logger.warning(f"[Settings] get_setting({key}) failed: {e}")
+        return default
+
+def set_setting(key: str, value: str) -> None:
+    """寫入或更新一個設定值。"""
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO app_settings (key, value, updated_at) VALUES (%s, %s, %s)
+            ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
+        """, (key, value, isonow()))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        logger.warning(f"[Settings] set_setting({key}) failed: {e}")
+
+# ── 羊駝發呆總開關（從 DB 讀，不再是純 in-memory global）──
+# check_alpaca_wander() 每次直接呼叫 get_setting()，不快取，確保重啟後正確。
 
 # ── 羊駝疲累模式 ──
 _tired_lock = threading.Lock()
-_tired_state = {
-    "enabled": False,       # 目前是否疲累中
-    "manual": False,        # 是否為手動強制開啟
-    "tired_hour": 22,       # 幾點後自動進入疲累（預設22點）
-    "last_reset_date": None # 上次重置日期
-}
+
+def _load_tired_state_from_db() -> dict:
+    """啟動時從 DB 預載 tired_hour；enabled/manual 重啟後重置是預期行為。"""
+    try:
+        hour = int(get_setting("tired_hour", "22"))
+    except ValueError:
+        hour = 22
+    return {
+        "enabled": False,
+        "manual": False,
+        "tired_hour": hour,
+        "last_reset_date": None
+    }
+
+_tired_state = _load_tired_state_from_db()
 
 TIRED_MESSAGES = [
     "咕嚕…\n今天行程太多了\n我先去睡\n明天再說",
@@ -1196,7 +1237,7 @@ scheduler.add_job(cleanup_cooldown_cache, "interval", hours=1,
 
 def check_alpaca_wander():
     """每小時檢查一次，到時間就對啟用群組發送羊駝發呆訊息"""
-    if not ALPACA_WANDER_ENABLED:
+    if get_setting("wander_global_enabled", "true").lower() != "true":
         return
     now = now_tw()
     conn = get_db(); cur = conn.cursor()
@@ -1271,17 +1312,17 @@ def api_wander_list():
         result.append(d)
     cur.close(); conn.close()
     return jsonify({
-        "global_enabled": ALPACA_WANDER_ENABLED,
+        "global_enabled": get_setting("wander_global_enabled", "true").lower() == "true",
         "groups": result
     })
 
 @app.route("/api/wander/global", methods=["POST"])
 def api_wander_global():
-    global ALPACA_WANDER_ENABLED
     if not check_admin(request): return jsonify({"error":"Unauthorized"}), 401
     data = request.json or {}
-    ALPACA_WANDER_ENABLED = bool(data.get("enabled", True))
-    return jsonify({"ok": True, "global_enabled": ALPACA_WANDER_ENABLED})
+    enabled = bool(data.get("enabled", True))
+    set_setting("wander_global_enabled", "true" if enabled else "false")
+    return jsonify({"ok": True, "global_enabled": enabled})
 
 @app.route("/api/wander/<group_id>", methods=["POST"])
 def api_wander_group(group_id):
@@ -1331,6 +1372,7 @@ def api_tired_set():
     with _tired_lock:
         if "tired_hour" in data:
             _tired_state["tired_hour"] = int(data["tired_hour"])
+            set_setting("tired_hour", str(_tired_state["tired_hour"]))  # 持久化
         if "manual_enabled" in data:
             _tired_state["manual"] = bool(data["manual_enabled"])
             _tired_state["enabled"] = bool(data["manual_enabled"])
