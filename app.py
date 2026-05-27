@@ -117,7 +117,6 @@ def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image
         "generationConfig": {
             "maxOutputTokens": max_tokens,
             "temperature": 0.7,
-            "thinkingConfig": {"thinkingBudget": 0}
         }
     }
 
@@ -1546,10 +1545,9 @@ def ai_parse_course():
         ai_text = gemini_call(prompt, image_b64=image_b64,
                               image_media_type=image_media_type,
                               image_url=image_url, max_tokens=600)
-        # 清除 markdown code block
-        if "```" in ai_text:
-            ai_text = ai_text.split("```")[1]
-            if ai_text.startswith("json"): ai_text = ai_text[4:]
+        # 清除 markdown code block（支援多種格式）
+        import re as _re
+        ai_text = _re.sub(r'```[a-z]*\n?', '', ai_text).strip()
         # 擷取第一個完整 JSON 物件
         start = ai_text.find("{")
         end   = ai_text.rfind("}") + 1
@@ -1604,10 +1602,9 @@ def ai_parse_multi():
     try:
         ai_text = gemini_call(prompt, image_b64=image_b64,
                               image_media_type=image_media_type, max_tokens=2048)
-        # 清除 markdown
-        if "```" in ai_text:
-            ai_text = ai_text.split("```")[1]
-            if ai_text.startswith("json"): ai_text = ai_text[4:]
+        # 清除 markdown（支援多種格式）
+        import re as _re
+        ai_text = _re.sub(r'```[a-z]*\n?', '', ai_text).strip()
         # 擷取 JSON 陣列
         start = ai_text.find("[")
         end   = ai_text.rfind("]") + 1
