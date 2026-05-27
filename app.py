@@ -35,34 +35,6 @@ IMGBB_API_KEY   = os.environ.get("IMGBB_API_KEY", "")
 APP_URL         = os.environ.get("APP_URL", "")
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
-# ── 多 Gemini Key 輪詢設定 ──
-# 支援 GEMINI_API_KEY_1, GEMINI_API_KEY_2, ... 無上限
-# 向下相容：若只有舊版 GEMINI_API_KEY，自動當成第一組
-def _load_gemini_keys() -> list:
-    keys = []
-    i = 1
-    while True:
-        k = os.environ.get(f"GEMINI_API_KEY_{i}", "").strip()
-        if not k:
-            break
-        keys.append(k)
-        i += 1
-    if not keys and GEMINI_API_KEY:
-        keys.append(GEMINI_API_KEY)
-    return keys
-
-GEMINI_KEYS = _load_gemini_keys()
-_gemini_key_index = 0  # 輪詢指標（全域）
-
-def _next_gemini_key() -> str:
-    """Round-robin 取下一個 Gemini Key"""
-    global _gemini_key_index
-    if not GEMINI_KEYS:
-        return ""
-    key = GEMINI_KEYS[_gemini_key_index % len(GEMINI_KEYS)]
-    _gemini_key_index += 1
-    return key
-
 # ── 多機器人設定 ──
 # 每個 Bot 用環境變數 BOT_<KEY>_TOKEN / BOT_<KEY>_SECRET / BOT_<KEY>_NAME / BOT_<KEY>_GROUPS 設定
 # BOT_<KEY>_GROUPS 為逗號分隔的群組 ID（選填；也可在後台動態綁定）
@@ -107,15 +79,11 @@ HEADERS = get_bot_headers(next(iter(BOTS), "main")) if BOTS else {
 }
 
 def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image/jpeg",
-               image_url: str = "", max_tokens: int = 800, _retry: int = None) -> str:
-    """呼叫 Gemini API，回傳純文字結果。
-    - 平時 Round-Robin 輪詢所有 Key
-    - 遇到 429 直接換下一個 Key 重試，不等待
-    - _retry 預設為 Key 數量（每個 Key 至少試一次），最少 3 次
-    """
-    if _retry is None:
-        _retry = max(len(GEMINI_KEYS), 3)
-
+               image_url: str = "", max_tokens: int = 800, _retry: int = 3) -> str:
+    """呼叫 Gemini API，回傳純文字結果。遇到 429 自動重試最多 _retry 次。"""
+    import time
+    GEMINI_URL = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+                  f"gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}")
     parts = []
     if image_b64:
         parts.append({"inline_data": {"mime_type": image_media_type, "data": image_b64}})
@@ -136,9 +104,6 @@ def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image
     }
 
     for attempt in range(1, _retry + 1):
-        api_key = _next_gemini_key()   # Round-Robin 取下一個 Key
-        GEMINI_URL = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-                      f"gemini-2.5-flash:generateContent?key={api_key}")
         resp = requests.post(GEMINI_URL, headers={"Content-Type": "application/json"},
                              json=body, timeout=60)
         result = resp.json()
@@ -148,9 +113,11 @@ def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image
             code = err.get("code", 0)
             msg  = err.get("message", "Gemini API 錯誤")
 
-            # 429 Rate Limit：直接換下一個 Key 重試，不等待
+            # 429 Rate Limit：等待後重試（縮短等待時間）
             if code == 429 and attempt < _retry:
-                logger.warning(f"Gemini 429（key_index={_gemini_key_index}），換下一個 Key 重試（{attempt}/{_retry}）")
+                wait = 12 * attempt   # 第1次等12秒，第2次等24秒
+                logger.warning(f"Gemini 429 rate limit，{wait} 秒後重試（第 {attempt}/{_retry} 次）")
+                time.sleep(wait)
                 continue
 
             raise Exception(msg)
@@ -162,7 +129,7 @@ def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image
             raise Exception("Gemini 回傳內容無法解析")
         return text.strip()
 
-    raise Exception("Gemini API 重試次數已達上限，所有 Key 均觸發限制，請稍後再試")
+    raise Exception("Gemini API 重試次數已達上限，請稍後再試")
 
 
 def fetch_group_name(group_id: str, bot_key: str = "") -> str:
@@ -492,15 +459,7 @@ def check_scheduled_broadcasts():
             if row["image_url"]:
                 msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
             msgs.append({"type":"text","text":row["content"]})
-            # 支援多機器人（bot_key 為逗號分隔字串）
-            bot_keys = [k.strip() for k in (row.get("bot_key","") or "").split(",") if k.strip()]
-            if bot_keys:
-                ok = total = 0
-                for bk in bot_keys:
-                    _ok, _total, _err = push_to_groups(msgs, bot_key=bk)
-                    ok += _ok; total += _total
-            else:
-                ok, total, _err = push_to_groups(msgs)
+            ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
             next_run = now_tw() + timedelta(seconds=row["interval_seconds"])
 
             # 若下一次發送已超過結束時間，發送後直接停用
@@ -1166,14 +1125,7 @@ def send_scheduled_now(sid):
     if row["image_url"]:
         msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
     msgs.append({"type":"text","text":row["content"]})
-    bot_keys = [k.strip() for k in (row.get("bot_key","") or "").split(",") if k.strip()]
-    if bot_keys:
-        ok = total = 0
-        for bk in bot_keys:
-            _ok, _total, _err = push_to_groups(msgs, bot_key=bk)
-            ok += _ok; total += _total
-    else:
-        ok, total, _err = push_to_groups(msgs)
+    ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
     next_run = (now_tw() + timedelta(seconds=row["interval_seconds"])).isoformat()
     cur.execute("UPDATE scheduled_broadcasts SET next_run=%s WHERE id=%s", (next_run, sid))
     conn.commit(); cur.close(); conn.close()
@@ -1511,40 +1463,16 @@ def handle_text(event, bot_key: str = ""):
                 return
 
             # ── 關鍵字快捷回覆（不消耗 Gemini token）──
-
-            # 方案一：關鍵字 → 對應分類名稱（精準過濾）
-            # key = 使用者可能說的詞，value = 資料庫 categories.name 的關鍵詞（部分比對）
-            KEYWORD_CATEGORY_MAP = {
-                "會議": ["會議"],
-                "開會": ["會議"],
-                "meeting": ["會議"],
-                "課程": ["課程", "培訓"],
-                "培訓": ["培訓", "課程"],
-                "活動": ["活動", "招商"],
-                "招商": ["招商"],
-            }
-
-            # 方案二：通用時間/查詢詞 → 查全部資料（不限分類）
-            GENERAL_KEYWORDS = ["有什麼", "近期", "行程", "下週", "這週", "本週",
-                                 "今天", "明天", "最近", "課表", "安排", "幾號", "什麼時候"]
-
+            COURSE_KEYWORDS = ["課程", "有什麼課", "近期", "行程", "下週", "這週",
+                                "本週", "今天", "明天", "最近", "課表", "安排", "幾號", "什麼時候",
+                                "會議", "線上", "小組", "上課", "培訓", "工作坊", "典禮"]
             BROADCAST_KEYWORDS = ["公告", "最新消息", "有什麼消息", "廣播", "通知"]
 
-            # 判斷命中哪些分類關鍵字（方案一）
-            matched_categories = []  # 資料庫分類名稱的比對詞清單
-            for kw, cats in KEYWORD_CATEGORY_MAP.items():
-                if kw in clean_text:
-                    matched_categories.extend(cats)
-            matched_categories = list(set(matched_categories))
-
-            is_general_query   = any(kw in clean_text for kw in GENERAL_KEYWORDS)
+            is_course_query    = any(kw in clean_text for kw in COURSE_KEYWORDS)
             is_broadcast_query = any(kw in clean_text for kw in BROADCAST_KEYWORDS)
 
-            # 有命中分類關鍵字、通用查詢詞、或公告詞，才進快捷回覆
-            is_course_query = bool(matched_categories) or is_general_query
-
             if is_course_query or is_broadcast_query:
-                logger.info(f"[Shortcut Reply] matched categories={matched_categories} general={is_general_query} text={clean_text[:40]!r}")
+                logger.info(f"[Shortcut Reply] keyword matched: {clean_text[:40]!r}")
                 try:
                     now = now_tw()
                     today = now.date().isoformat()
@@ -1553,57 +1481,25 @@ def handle_text(event, bot_key: str = ""):
                     reply_lines = []
 
                     if is_course_query:
-                        if matched_categories:
-                            # 方案一：依分類過濾（比對 category 名稱 或 title 含關鍵詞）
-                            # 用 ILIKE ANY 比對分類名稱，同時用 title 做方案二兜底
-                            cat_conditions = " OR ".join(
-                                [f"cat.name ILIKE %s" for _ in matched_categories] +
-                                [f"c.title ILIKE %s" for _ in matched_categories]
-                            )
-                            params = (
-                                [f"%{c}%" for c in matched_categories] +   # cat.name
-                                [f"%{c}%" for c in matched_categories] +   # c.title
-                                [today]
-                            )
-                            two_months_later = (now + __import__('datetime').timedelta(days=365)).date().isoformat()
-                            params[-1:] = [today, two_months_later]  # 替換最後的 today，並加上上限
-                            _cur.execute(f"""
-                                SELECT c.title, c.course_date::text, c.course_time,
-                                       c.location, cat.name AS category
-                                FROM courses c
-                                LEFT JOIN categories cat ON c.category_id = cat.id
-                                WHERE ({cat_conditions})
-                                  AND c.course_date >= %s
-                                  AND c.course_date <= %s
-                                ORDER BY c.course_date ASC
-                                LIMIT 50
-                            """, params)
-                            label = f"近期{clean_text[:6].strip()}"
-                        else:
-                            # 通用查詢：近兩個月
-                            two_months_later = (now + __import__('datetime').timedelta(days=365)).date().isoformat()
-                            _cur.execute("""
-                                SELECT c.title, c.course_date::text, c.course_time,
-                                       c.location, cat.name AS category
-                                FROM courses c
-                                LEFT JOIN categories cat ON c.category_id = cat.id
-                                WHERE c.course_date >= %s
-                                  AND c.course_date <= %s
-                                ORDER BY c.course_date ASC
-                                LIMIT 50
-                            """, (today, two_months_later))
-                            label = "近期行程"
-
+                        _cur.execute("""
+                            SELECT c.title, c.course_date::text, c.course_time,
+                                   c.location, cat.name AS category
+                            FROM courses c
+                            LEFT JOIN categories cat ON c.category_id = cat.id
+                            WHERE c.course_date >= %s
+                            ORDER BY c.course_date ASC
+                            LIMIT 8
+                        """, (today,))
                         rows = _cur.fetchall()
                         if rows:
-                            reply_lines.append(f"咕嚕咕嚕～\n幫你整理一下{label}\n")
+                            reply_lines.append("咕嚕咕嚕～\n幫你整理一下近期的課\n")
                             for r in rows:
                                 cat = f"[{r['category']}] " if r.get("category") else ""
                                 loc = f" 📍{r['location']}" if r.get("location") else ""
                                 reply_lines.append(f"📅 {r['course_date']} {r['course_time']} {cat}{r['title']}{loc}")
                             reply_lines.append("\n咕嘟～記得去")
                         else:
-                            reply_lines.append(f"咕嚕～\n最近好像沒有{label}相關的安排\n咕…")
+                            reply_lines.append("咕嚕～\n最近好像沒有課\n咕…")
 
                     if is_broadcast_query:
                         _cur.execute("""
@@ -1616,7 +1512,7 @@ def handle_text(event, bot_key: str = ""):
                         rows = _cur.fetchall()
                         if rows:
                             if reply_lines:
-                                reply_lines.append("")
+                                reply_lines.append("")  # 空行分隔
                             reply_lines.append("嗚咕～\n最新公告整理一下\n")
                             for r in rows:
                                 next_run = str(r["next_run"])[:16] if r.get("next_run") else ""
@@ -1656,8 +1552,8 @@ def handle_text(event, bot_key: str = ""):
                         LEFT JOIN categories cat ON c.category_id = cat.id
                         WHERE c.course_date >= %s AND c.course_date <= %s
                         ORDER BY c.course_date ASC
-                        LIMIT 50
-                    """, (today, (now + __import__('datetime').timedelta(days=365)).date().isoformat()))
+                        LIMIT 20
+                    """, (today, (now + __import__('datetime').timedelta(days=60)).date().isoformat()))
                     course_rows = _cur.fetchall()
 
                     # 目前啟用中的排程廣播
@@ -1712,7 +1608,7 @@ def handle_text(event, bot_key: str = ""):
                     "語助詞：咕嚕咕嚕～/咕哇～/咕嘟～/咕～/噗咕～，不提餓，保持開朗輕鬆"
                 )
 
-                IPAPA_PERSONA = f"""你是IPAPA羊駝提醒機器人。一隻生活在系統裡的羊駝，提醒行程、用羊駝方式陪伴。不教學、不銷售、不說成功學。
+                IPAPA_PERSONA = f"""你是IPAPA羊駝提醒機器人。你本身就是那隻羊駝，不要把自己當成食物或第三者。一隻生活在系統裡的羊駝，提醒行程、用羊駝方式陪伴。不教學、不銷售、不說成功學。
 
 格式：輸出兩段，中間用 ---SPLIT--- 分隔。
 第一段：主回覆（開頭羊駝語助詞＋主體1~2句＋收尾）
@@ -1741,7 +1637,7 @@ def handle_text(event, bot_key: str = ""):
                 msg2 = parts[1].strip() if len(parts) > 1 else ""
 
             except Exception as e:
-                msg1 = f"❌ AI 暫時無法回覆，請稍後再試。\n（{str(e)[:60]}）"
+                msg1 = "咕嚕…\n我剛才發呆太久了\n稍後再問我一次\n咕…"
                 msg2 = ""
 
             # 一次 reply 送出最多兩則訊息（完全免費，不消耗 push 額度）
