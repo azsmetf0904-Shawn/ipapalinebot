@@ -166,14 +166,42 @@ HEADERS = get_bot_headers(next(iter(BOTS), "main")) if BOTS else {
     "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
 }
 
-# ── 關鍵字常數（模組頂層，避免每次請求重建）──
-COURSE_KEYWORDS     = ["課程", "有什麼課", "近期", "行程", "下週", "這週",
-                        "本週", "今天", "明天", "最近", "課表", "安排", "幾號", "什麼時候",
-                        "會議", "線上", "小組", "上課", "培訓", "工作坊", "典禮"]
-BROADCAST_KEYWORDS  = ["公告", "最新消息", "有什麼消息", "廣播", "通知"]
-MEETING_KEYWORDS    = ["會議", "線上會議", "開會", "會前會"]
-RECRUITMENT_KEYWORDS = ["招商", "說明會", "招商說明"]
-TRAINING_KEYWORDS   = ["內訓", "教練", "系統人員", "培訓", "工作坊"]
+# ── 關鍵字清單（從 DB app_settings 讀取，帶 TTL 快取）──
+# 預設值：若 DB 尚無設定，自動使用這組
+_KW_DEFAULTS = {
+    "kw_course":      "課程,有什麼課,近期,行程,下週,這週,本週,今天,明天,最近,課表,安排,幾號,什麼時候,上課,典禮,活動",
+    "kw_broadcast":   "公告,最新消息,有什麼消息,廣播,通知",
+    "kw_meeting":     "會議,線上會議,開會,會前會,線上",
+    "kw_recruitment": "招商,說明會,招商說明",
+    "kw_training":    "內訓,教練,系統人員,培訓,工作坊",
+}
+_KW_CACHE: dict = {}
+_KW_CACHE_TS: float = 0.0
+_KW_CACHE_TTL = 120  # 秒；後台改完最多 2 分鐘生效
+
+def _load_keywords() -> dict[str, list[str]]:
+    """從 DB 讀關鍵字設定，回傳 {key: [kw, ...]}，帶 TTL 快取。"""
+    global _KW_CACHE, _KW_CACHE_TS
+    now_ts = time.time()
+    if _KW_CACHE and now_ts - _KW_CACHE_TS < _KW_CACHE_TTL:
+        return _KW_CACHE
+    result = {}
+    for key, default in _KW_DEFAULTS.items():
+        raw = get_setting(key, default)
+        result[key] = [kw.strip() for kw in raw.split(",") if kw.strip()]
+    _KW_CACHE = result
+    _KW_CACHE_TS = now_ts
+    return result
+
+def get_keywords(key: str) -> list[str]:
+    """取得單一關鍵字清單（供外部呼叫）。"""
+    return _load_keywords().get(key, [])
+
+# 初始化時同步寫入 DB 預設值（僅在該 key 不存在時）
+def _init_keyword_defaults():
+    for key, default in _KW_DEFAULTS.items():
+        if not get_setting(key):
+            set_setting(key, default)
 
 def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image/jpeg",
                image_url: str = "", max_tokens: int = 800, _retry: int = 3,
@@ -562,6 +590,12 @@ def _startup_init_db(max_retries: int = 5, delay: int = 3):
 
 # ── 模組載入時立即嘗試（gunicorn preload / flask run 都會跑到）──
 _db_ready = _startup_init_db()
+if _db_ready:
+    try:
+        _init_keyword_defaults()
+        logger.info("[Startup] keyword defaults initialized")
+    except Exception as _ke:
+        logger.warning(f"[Startup] keyword defaults init failed: {_ke}")
 
 # ── Gunicorn prefork 模式下 worker 各自 fork，
 #    若模組載入時 DB 尚未就緒，在第一個 request 前再試一次。──
@@ -2546,15 +2580,16 @@ def handle_text(event, bot_key: str = ""):
                 return
 
             # ── 關鍵字快捷回覆（不消耗 Gemini token）──
-            is_course_query    = any(kw in clean_text for kw in COURSE_KEYWORDS)
-            is_broadcast_query = any(kw in clean_text for kw in BROADCAST_KEYWORDS)
+            _kw = _load_keywords()   # 從快取讀，幾乎無成本
+            is_course_query    = any(kw in clean_text for kw in _kw["kw_course"])
+            is_broadcast_query = any(kw in clean_text for kw in _kw["kw_broadcast"])
             # 精確活動類型（取聯集後做 ILIKE 過濾）
             _specific_types = []
-            if any(kw in clean_text for kw in MEETING_KEYWORDS):
+            if any(kw in clean_text for kw in _kw["kw_meeting"]):
                 _specific_types += ["會議", "線上", "會前會"]
-            if any(kw in clean_text for kw in RECRUITMENT_KEYWORDS):
+            if any(kw in clean_text for kw in _kw["kw_recruitment"]):
                 _specific_types += ["招商", "說明會"]
-            if any(kw in clean_text for kw in TRAINING_KEYWORDS):
+            if any(kw in clean_text for kw in _kw["kw_training"]):
                 _specific_types += ["內訓", "教練", "培訓", "工作坊", "系統"]
             is_specific_query = bool(_specific_types)
 
@@ -2688,10 +2723,11 @@ def handle_text(event, bot_key: str = ""):
                 today = now.date().isoformat()
                 current_hour = now.hour
 
-                # ── 從資料庫撈課程與排程廣播作為 AI 背景知識 ──
+                # ── 從資料庫撈課程、廣播、公告作為 AI 背景知識（改法 C：補上公告兩張表）──
                 try:
                     _conn = get_db(); _cur = _conn.cursor()
-                    # 未來 60 天內的課程
+
+                    # 1. 未來 60 天內的課程
                     _cur.execute("""
                         SELECT c.title, c.course_date::text, c.course_time,
                                c.location, c.description, cat.name AS category
@@ -2703,7 +2739,7 @@ def handle_text(event, bot_key: str = ""):
                     """, (today, (now + timedelta(days=60)).date().isoformat()))
                     course_rows = _cur.fetchall()
 
-                    # 目前啟用中的排程廣播
+                    # 2. 啟用中的排程廣播
                     _cur.execute("""
                         SELECT title, content, next_run, end_time
                         FROM scheduled_broadcasts
@@ -2712,25 +2748,45 @@ def handle_text(event, bot_key: str = ""):
                         LIMIT 10
                     """)
                     broadcast_rows = _cur.fetchall()
+
+                    # 3. 未來 30 天內尚未發送的一次性排程公告（新增）
+                    _cur.execute("""
+                        SELECT title, content, send_at
+                        FROM scheduled_announcements
+                        WHERE sent = FALSE AND send_at >= %s AND send_at <= %s
+                        ORDER BY send_at ASC
+                        LIMIT 10
+                    """, (now.isoformat(), (now + timedelta(days=30)).isoformat()))
+                    scheduled_ann_rows = _cur.fetchall()
+
+                    # 4. 最近 7 天已發出的立即公告（新增）
+                    _cur.execute("""
+                        SELECT content, sent_at
+                        FROM announcements
+                        WHERE sent_at >= %s
+                        ORDER BY sent_at DESC
+                        LIMIT 5
+                    """, ((now - timedelta(days=7)).isoformat(),))
+                    recent_ann_rows = _cur.fetchall()
+
                     _cur.close(); _conn.close()
                 except Exception as db_err:
                     logger.warning(f"[AI Mention] DB context fetch failed: {db_err}")
-                    course_rows = []
-                    broadcast_rows = []
+                    course_rows = broadcast_rows = scheduled_ann_rows = recent_ann_rows = []
 
-                # 格式化成文字背景資料
+                # ── 格式化背景資料 ──
                 context_parts = []
                 if course_rows:
                     lines = ["【課程清單（未來60天）】"]
                     for r in course_rows:
-                        cat = f"[{r['category']}] " if r.get("category") else ""
-                        loc = f" / 地點：{r['location']}" if r.get("location") else ""
+                        cat  = f"[{r['category']}] " if r.get("category") else ""
+                        loc  = f" / 地點：{r['location']}" if r.get("location") else ""
                         desc = f" / 說明：{r['description']}" if r.get("description") else ""
                         lines.append(f"- {r['course_date']} {r['course_time']} {cat}{r['title']}{loc}{desc}")
                     context_parts.append("\n".join(lines))
 
                 if broadcast_rows:
-                    lines = ["【排程廣播（啟用中）】"]
+                    lines = ["【定期廣播（啟用中）】"]
                     for r in broadcast_rows:
                         next_run = str(r["next_run"])[:16] if r.get("next_run") else "未知"
                         end_time = f" 至 {str(r['end_time'])[:16]}" if r.get("end_time") else ""
@@ -2738,44 +2794,98 @@ def handle_text(event, bot_key: str = ""):
                         lines.append(f"  內容：{str(r['content'])[:80]}")
                     context_parts.append("\n".join(lines))
 
+                if scheduled_ann_rows:
+                    lines = ["【排程公告（即將發出）】"]
+                    for r in scheduled_ann_rows:
+                        send_at = str(r["send_at"])[:16]
+                        title   = f"【{r['title']}】" if r.get("title") else ""
+                        lines.append(f"- {send_at} {title}{str(r['content'])[:80]}")
+                    context_parts.append("\n".join(lines))
+
+                if recent_ann_rows:
+                    lines = ["【近期公告（過去7天已發出）】"]
+                    for r in recent_ann_rows:
+                        sent_at = str(r["sent_at"])[:16]
+                        lines.append(f"- {sent_at} {str(r['content'])[:80]}")
+                    context_parts.append("\n".join(lines))
+
                 db_context = "\n\n".join(context_parts)
                 if db_context:
                     db_context = (
-                        f"\n\n[⚠️ 以下是系統資料庫的真實資料，回答資料相關問題時【必須】優先根據這些資料，"
-                        f"不可捏造或猜測不在清單中的活動]\n{db_context}\n"
+                        f"\n\n[📋 系統資料庫（真實資料，回答時必須以此為準，不可捏造）]\n"
+                        f"{db_context}\n"
+                    )
+
+                # ── 改法 B：意圖分類，明確告訴 Gemini 這題要做什麼 ──
+                _kw2 = _load_keywords()
+                _all_data_kw = (
+                    _kw2["kw_course"] + _kw2["kw_broadcast"] +
+                    _kw2["kw_meeting"] + _kw2["kw_recruitment"] + _kw2["kw_training"] +
+                    ["什麼", "幾號", "幾點", "哪裡", "在哪", "時間", "日期", "地點",
+                     "有什麼", "有沒有", "公告", "活動"]
+                )
+                _intent_course    = any(kw in clean_text for kw in _kw2["kw_course"] + _kw2["kw_meeting"] + _kw2["kw_recruitment"] + _kw2["kw_training"])
+                _intent_broadcast = any(kw in clean_text for kw in _kw2["kw_broadcast"])
+                is_data_query     = bool(db_context) and any(kw in clean_text for kw in _all_data_kw)
+
+                # 意圖標籤（給 Gemini 看的明確指令）
+                if _intent_course and _intent_broadcast:
+                    _intent_label = "課程查詢＋公告查詢"
+                    _intent_instruction = (
+                        "這是【課程 + 公告查詢】。"
+                        "先列出符合的課程（格式：📅 日期 時間 標題 / 地點），再列出相關公告。"
+                        "資料必須全部列出，不可省略。若某類找不到，直接說找不到。"
+                    )
+                elif _intent_course:
+                    _intent_label = "課程查詢"
+                    _intent_instruction = (
+                        "這是【課程查詢】。"
+                        "必須從「課程清單」中找出所有符合問題的項目，格式：📅 日期 時間 標題 / 地點。"
+                        "全部列出，不可省略、不可只說「有幾個活動」而不展開。"
+                        "若清單中找不到符合的，直接說沒有，不要捏造。"
+                    )
+                elif _intent_broadcast:
+                    _intent_label = "公告查詢"
+                    _intent_instruction = (
+                        "這是【公告查詢】。"
+                        "從「定期廣播」「排程公告」「近期公告」中找出相關內容，逐條列出。"
+                        "若找不到，直接說目前沒有公告。"
+                    )
+                else:
+                    _intent_label = "閒聊"
+                    _intent_instruction = (
+                        "這是【閒聊】。"
+                        "不需要引用任何資料，用麥可的個性自然回應。"
                     )
 
                 # 判斷目前是餓感模式還是開朗模式
                 is_hungry_mode = (
-                    (6  <= current_hour <= 8)  or   # 早餐
-                    (11 <= current_hour <= 13) or   # 午餐
-                    (18 <= current_hour <= 20)       # 晚餐
+                    (6  <= current_hour <= 8)  or
+                    (11 <= current_hour <= 13) or
+                    (18 <= current_hour <= 20)
                 )
-
                 mode_instruction = (
                     "收尾加餓感：「咕嚕…等一下吃什麼」/「好餓」/「先吃飯嗎」（只能在收尾）"
                     if is_hungry_mode else
                     "語助詞：咕嚕咕嚕～/咕哇～/咕嘟～/咕～/噗咕～，不提餓，保持開朗輕鬆"
                 )
 
-                # ── 判斷問題類型（決定回覆策略）──
-                is_data_query = bool(db_context) and any(kw in clean_text for kw in
-                    ["什麼", "幾號", "幾點", "哪裡", "在哪", "時間", "日期", "地點",
-                     "有什麼", "有沒有", "今天", "明天", "這週", "下週", "本週",
-                     "近期", "最近", "課程", "會議", "招商", "內訓", "公告", "活動"])
-
                 if is_data_query:
-                    format_instruction = """格式：輸出兩段，中間用 ---SPLIT--- 分隔。
-第一段：用麥可的語氣開頭（咕嚕/咕嘟/噗咕等），然後【完整列出所有相關資料】，每筆一行，格式為「📅 日期 時間 標題 / 地點」，結尾加一句帶溫度的收尾。若有連結請保留在對應活動後面。若資料中找不到相關內容，直接說找不到，不要捏造。
-第二段：一句輕鬆補充或追問，可以帶一點麥可的日常感（「我剛從夜市回來」「坐車來的」之類），不重複第一段資料。
+                    format_instruction = f"""意圖：{_intent_label}
+指令：{_intent_instruction}
 
-⚠️ 重要：第一段必須把背景資料中符合問題的項目【全部列出】，不可省略、不可只說「有幾個活動」而不列出來。"""
+格式：輸出兩段，中間用 ---SPLIT--- 分隔。
+第一段：麥可語氣開頭 → 逐條列出資料（📅/📢 格式）→ 帶溫度的收尾。若有連結請接在對應條目後面。
+第二段：一句輕鬆補充或追問（麥可日常感），不重複第一段資料。"""
                     temperature_val = 0.3
-                    max_tok = 650
+                    max_tok = 700
                 else:
-                    format_instruction = """格式：輸出兩段，中間用 ---SPLIT--- 分隔。
-第一段：主回覆（開頭麥可語助詞＋主體1~2句＋收尾），輕鬆有個性，可以帶一點麥可的日常生活畫面。
-第二段：延伸一句（反問、發呆聯想、或一個麥可的小日常），不重複第一段。"""
+                    format_instruction = f"""意圖：{_intent_label}
+指令：{_intent_instruction}
+
+格式：輸出兩段，中間用 ---SPLIT--- 分隔。
+第一段：主回覆（麥可語助詞＋主體1~2句＋收尾），輕鬆有個性。
+第二段：延伸一句（反問、發呆聯想、或麥可小日常），不重複第一段。"""
                     temperature_val = 0.8
                     max_tok = 420
 
@@ -3021,6 +3131,32 @@ def handle_leave(event):
     cur.execute("UPDATE groups SET active=FALSE WHERE group_id=%s", (gid,))  # 軟刪除，保留歷史記錄
     conn.commit(); cur.close(); conn.close()
     logger.info(f"Chat left: {gid} → active=FALSE")
+
+# ── 關鍵字管理 API ──
+
+@app.route("/admin/keywords", methods=["GET"])
+def get_keywords_api():
+    if not check_admin(request): return jsonify({"error": "unauthorized"}), 401
+    result = {}
+    for key, default in _KW_DEFAULTS.items():
+        result[key] = get_setting(key, default)
+    return jsonify(result)
+
+@app.route("/admin/keywords", methods=["POST"])
+def save_keywords_api():
+    if not check_admin(request): return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json() or {}
+    saved = []
+    for key in _KW_DEFAULTS:
+        if key in data:
+            val = ",".join(kw.strip() for kw in str(data[key]).split(",") if kw.strip())
+            set_setting(key, val)
+            saved.append(key)
+    # 清快取，讓下一次請求立即重讀
+    global _KW_CACHE_TS
+    _KW_CACHE_TS = 0.0
+    logger.info(f"[Keywords] updated: {saved}")
+    return jsonify({"ok": True, "updated": saved})
 
 # ── 人設管理 API ──
 
