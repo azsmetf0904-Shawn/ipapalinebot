@@ -35,6 +35,34 @@ IMGBB_API_KEY   = os.environ.get("IMGBB_API_KEY", "")
 APP_URL         = os.environ.get("APP_URL", "")
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 
+# ── 多 Gemini Key 輪詢設定 ──
+# 支援 GEMINI_API_KEY_1, GEMINI_API_KEY_2, ... 無上限
+# 向下相容：若只有舊版 GEMINI_API_KEY，自動當成第一組
+def _load_gemini_keys() -> list:
+    keys = []
+    i = 1
+    while True:
+        k = os.environ.get(f"GEMINI_API_KEY_{i}", "").strip()
+        if not k:
+            break
+        keys.append(k)
+        i += 1
+    if not keys and GEMINI_API_KEY:
+        keys.append(GEMINI_API_KEY)
+    return keys
+
+GEMINI_KEYS = _load_gemini_keys()
+_gemini_key_index = 0  # 輪詢指標（全域）
+
+def _next_gemini_key() -> str:
+    """Round-robin 取下一個 Gemini Key"""
+    global _gemini_key_index
+    if not GEMINI_KEYS:
+        return ""
+    key = GEMINI_KEYS[_gemini_key_index % len(GEMINI_KEYS)]
+    _gemini_key_index += 1
+    return key
+
 # ── 多機器人設定 ──
 # 每個 Bot 用環境變數 BOT_<KEY>_TOKEN / BOT_<KEY>_SECRET / BOT_<KEY>_NAME / BOT_<KEY>_GROUPS 設定
 # BOT_<KEY>_GROUPS 為逗號分隔的群組 ID（選填；也可在後台動態綁定）
@@ -79,11 +107,15 @@ HEADERS = get_bot_headers(next(iter(BOTS), "main")) if BOTS else {
 }
 
 def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image/jpeg",
-               image_url: str = "", max_tokens: int = 800, _retry: int = 3) -> str:
-    """呼叫 Gemini API，回傳純文字結果。遇到 429 自動重試最多 _retry 次。"""
-    import time
-    GEMINI_URL = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-                  f"gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}")
+               image_url: str = "", max_tokens: int = 800, _retry: int = None) -> str:
+    """呼叫 Gemini API，回傳純文字結果。
+    - 平時 Round-Robin 輪詢所有 Key
+    - 遇到 429 直接換下一個 Key 重試，不等待
+    - _retry 預設為 Key 數量（每個 Key 至少試一次），最少 3 次
+    """
+    if _retry is None:
+        _retry = max(len(GEMINI_KEYS), 3)
+
     parts = []
     if image_b64:
         parts.append({"inline_data": {"mime_type": image_media_type, "data": image_b64}})
@@ -104,6 +136,9 @@ def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image
     }
 
     for attempt in range(1, _retry + 1):
+        api_key = _next_gemini_key()   # Round-Robin 取下一個 Key
+        GEMINI_URL = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+                      f"gemini-2.5-flash:generateContent?key={api_key}")
         resp = requests.post(GEMINI_URL, headers={"Content-Type": "application/json"},
                              json=body, timeout=60)
         result = resp.json()
@@ -113,11 +148,9 @@ def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image
             code = err.get("code", 0)
             msg  = err.get("message", "Gemini API 錯誤")
 
-            # 429 Rate Limit：等待後重試（縮短等待時間）
+            # 429 Rate Limit：直接換下一個 Key 重試，不等待
             if code == 429 and attempt < _retry:
-                wait = 12 * attempt   # 第1次等12秒，第2次等24秒
-                logger.warning(f"Gemini 429 rate limit，{wait} 秒後重試（第 {attempt}/{_retry} 次）")
-                time.sleep(wait)
+                logger.warning(f"Gemini 429（key_index={_gemini_key_index}），換下一個 Key 重試（{attempt}/{_retry}）")
                 continue
 
             raise Exception(msg)
@@ -129,7 +162,7 @@ def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image
             raise Exception("Gemini 回傳內容無法解析")
         return text.strip()
 
-    raise Exception("Gemini API 重試次數已達上限，請稍後再試")
+    raise Exception("Gemini API 重試次數已達上限，所有 Key 均觸發限制，請稍後再試")
 
 
 def fetch_group_name(group_id: str, bot_key: str = "") -> str:
