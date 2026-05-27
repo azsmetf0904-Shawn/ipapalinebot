@@ -696,6 +696,57 @@ WANDER_MESSAGES = [
 
 ALPACA_WANDER_ENABLED = True   # 全域總開關（可由環境變數控制）
 
+# ── 羊駝疲累模式 ──
+import threading
+_tired_lock = threading.Lock()
+_tired_state = {
+    "enabled": False,       # 目前是否疲累中
+    "manual": False,        # 是否為手動強制開啟
+    "tired_hour": 22,       # 幾點後自動進入疲累（預設22點）
+    "last_reset_date": None # 上次重置日期
+}
+
+TIRED_MESSAGES = [
+    "咕嚕…有點累\n等我休息一下",
+    "咕…今天話說太多了\n明天再聊",
+    "嗚咕…\n我需要睡一下\n咕",
+    "咕嚕嚕…\n好累喔\n改天再說",
+    "咕…\n撐不住了\n掰掰",
+]
+
+def is_tired_mode() -> bool:
+    """判斷目前是否在疲累模式（時段 or 手動）"""
+    import random
+    with _tired_lock:
+        now = now_tw()
+        today = now.date()
+
+        # 每天凌晨自動重置
+        if _tired_state["last_reset_date"] != today:
+            if not _tired_state["manual"]:
+                _tired_state["enabled"] = False
+            _tired_state["last_reset_date"] = today
+
+        # 時段觸發：超過設定時間自動進入疲累
+        if not _tired_state["manual"] and now.hour >= _tired_state["tired_hour"]:
+            _tired_state["enabled"] = True
+
+        return _tired_state["enabled"]
+
+def get_tired_message() -> str:
+    import random
+    return random.choice(TIRED_MESSAGES)
+
+# 排程：每天凌晨 00:00 重置非手動的疲累模式
+def reset_tired_mode():
+    with _tired_lock:
+        if not _tired_state["manual"]:
+            _tired_state["enabled"] = False
+    logger.info("[Tired] 自動重置疲累模式")
+
+scheduler.add_job(reset_tired_mode, "cron", hour=0, minute=0,
+                  id="reset_tired", replace_existing=True)
+
 def check_alpaca_wander():
     """每小時檢查一次，到時間就對啟用群組發送羊駝發呆訊息"""
     if not ALPACA_WANDER_ENABLED:
@@ -798,6 +849,31 @@ def api_wander_init(group_id):
     """, (group_id, isonow()))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok": True})
+
+# ── 疲累模式 API ──
+@app.route("/api/tired", methods=["GET"])
+def api_tired_get():
+    if not check_admin(request): return jsonify({"error":"Unauthorized"}), 401
+    with _tired_lock:
+        return jsonify({
+            "enabled":    _tired_state["enabled"],
+            "manual":     _tired_state["manual"],
+            "tired_hour": _tired_state["tired_hour"],
+            "current_hour": now_tw().hour
+        })
+
+@app.route("/api/tired", methods=["POST"])
+def api_tired_set():
+    if not check_admin(request): return jsonify({"error":"Unauthorized"}), 401
+    data = request.json or {}
+    with _tired_lock:
+        if "tired_hour" in data:
+            _tired_state["tired_hour"] = int(data["tired_hour"])
+        if "manual_enabled" in data:
+            _tired_state["manual"] = bool(data["manual_enabled"])
+            _tired_state["enabled"] = bool(data["manual_enabled"])
+    logger.info(f"[Tired] 手動設定: {_tired_state}")
+    return jsonify({"ok": True, **{k: _tired_state[k] for k in ("enabled","manual","tired_hour")}})
 
 # ── 對話紀錄 API ──
 @app.route("/api/chat-logs", methods=["GET"])
@@ -1767,6 +1843,12 @@ def handle_text(event, bot_key: str = ""):
 
             if not clean_text:
                 reply_message(reply_token, "咕嚕～？", bot_key=bot_key)
+                return
+
+            # ── 疲累模式：不呼叫 Gemini，只回短句 ──
+            if is_tired_mode():
+                logger.info(f"[Tired] user={user_id} 疲累模式中，略過 Gemini")
+                reply_message(reply_token, get_tired_message(), bot_key=bot_key)
                 return
 
             # ── 關鍵字快捷回覆（不消耗 Gemini token）──
