@@ -905,18 +905,35 @@ scheduler.add_job(check_alpaca_wander, "interval", minutes=60,
 def api_wander_list():
     if not check_admin(request): return jsonify({"error":"Unauthorized"}), 401
     conn = get_db(); cur = conn.cursor()
+
+    # 自動把 groups 裡有、但 alpaca_wander 沒有的群組初始化進來（預設關閉）
+    cur.execute("""
+        INSERT INTO alpaca_wander (group_id, enabled, send_hour, interval_days, created_at)
+        SELECT g.group_id, FALSE, 14, 7, NOW()
+        FROM groups g
+        WHERE NOT EXISTS (
+            SELECT 1 FROM alpaca_wander aw WHERE aw.group_id = g.group_id
+        )
+    """)
+    conn.commit()
+
     cur.execute("""
         SELECT aw.group_id, aw.enabled, aw.send_hour, aw.interval_days, aw.last_sent,
                g.group_name
         FROM alpaca_wander aw
         LEFT JOIN groups g ON g.group_id = aw.group_id
-        ORDER BY g.group_name
+        ORDER BY COALESCE(g.group_name, aw.group_id)
     """)
     rows = cur.fetchall()
+    result = []
+    for r in rows:
+        d = dict(r)
+        if d.get("last_sent"): d["last_sent"] = str(d["last_sent"])
+        result.append(d)
     cur.close(); conn.close()
     return jsonify({
         "global_enabled": ALPACA_WANDER_ENABLED,
-        "groups": [dict(r) for r in rows]
+        "groups": result
     })
 
 @app.route("/api/wander/global", methods=["POST"])
@@ -2209,6 +2226,16 @@ def handle_text(event, bot_key: str = ""):
 
                     shortcut_msg = "\n".join(reply_lines)
                     reply_message(reply_token, shortcut_msg, bot_key=bot_key)
+                    # 快捷回覆也寫入 chat_logs
+                    try:
+                        _lconn = get_db(); _lcur = _lconn.cursor()
+                        _lcur.execute("""
+                            INSERT INTO chat_logs (group_id, group_name, user_id, question, answer, created_at)
+                            VALUES (%s, (SELECT group_name FROM groups WHERE group_id=%s), %s, %s, %s, %s)
+                        """, (gid, gid, user_id, clean_text, shortcut_msg, isonow()))
+                        _lconn.commit(); _lcur.close(); _lconn.close()
+                    except Exception as _le:
+                        logger.warning(f"[ChatLog-Shortcut] write failed: {_le}")
                     return
 
                 except Exception as e:
