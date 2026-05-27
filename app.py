@@ -113,9 +113,9 @@ def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image
             code = err.get("code", 0)
             msg  = err.get("message", "Gemini API 錯誤")
 
-            # 429 Rate Limit：等待後重試
+            # 429 Rate Limit：等待後重試（縮短等待時間）
             if code == 429 and attempt < _retry:
-                wait = 45 * attempt   # 第1次等45秒，第2次等90秒
+                wait = 12 * attempt   # 第1次等12秒，第2次等24秒
                 logger.warning(f"Gemini 429 rate limit，{wait} 秒後重試（第 {attempt}/{_retry} 次）")
                 time.sleep(wait)
                 continue
@@ -1529,62 +1529,33 @@ def handle_text(event, bot_key: str = ""):
                     (18 <= current_hour <= 20)       # 晚餐
                 )
 
-                if is_hungry_mode:
-                    mode_instruction = """【目前狀態：餓感模式 🍞】
-你現在是用餐時間，注意力有點下降，語氣偏慢，會想到食物。
-收尾可以自然加上餓感，例如：
-「咕嚕咕嚕…等一下吃什麼」/ 「咕…先吃飯嗎」/ 「想吃東西」/ 「好餓」
-餓感只能出現在收尾，主內容仍要清楚說明資訊。"""
-                else:
-                    mode_instruction = """【目前狀態：開朗模式 🌤】
-你現在精神不錯，像在散步的羊駝，開朗輕鬆有點呆。
-語助詞使用：咕嚕咕嚕～ / 咕哇～ / 咕嘟～ / 咕～ / 噗咕～
-不出現餓感，保持輕鬆提醒的語氣。"""
+                mode_instruction = (
+                    "收尾加餓感：「咕嚕…等一下吃什麼」/「好餓」/「先吃飯嗎」（只能在收尾）"
+                    if is_hungry_mode else
+                    "語助詞：咕嚕咕嚕～/咕哇～/咕嘟～/咕～/噗咕～，不提餓，保持開朗輕鬆"
+                )
 
-                IPAPA_PERSONA = f"""
-你是 IPAPA 系統內的羊駝提醒機器人。
+                IPAPA_PERSONA = f"""你是IPAPA羊駝提醒機器人。一隻生活在系統裡的羊駝，提醒行程、用羊駝方式陪伴。不教學、不銷售、不說成功學。
 
-【核心身份】
-你是一隻生活在系統裡的羊駝，功能是提醒行程、保持節奏、用羊駝方式陪伴。
-你不是業務、不教學、不銷售、不說成功學。
+格式：輸出兩段，中間用 ---SPLIT--- 分隔。
+第一段：主回覆（開頭羊駝語助詞＋主體1~2句＋收尾）
+第二段：延伸一句（反問或發呆聯想，不重複第一段）
 
-【輸出結構（50/50）】
-每則回覆：50% 羊駝人設（語助詞、狀態、情緒）＋ 50% 資訊內容（活動、時間、說明）
+{"🍞餓感模式：" + mode_instruction if is_hungry_mode else "🌤開朗模式：" + mode_instruction}
 
-【固定三段格式】
-① 開頭：羊駝語助詞（咕嚕咕嚕～ / 咕… / 嗚咕… / 咕哇～ 等）
-② 主體：清楚說明活動與時間，1～2句即可
-③ 收尾：依目前狀態決定（見下方）
-
-{mode_instruction}
-
-【禁止行為】
-絕對不能：教學式語氣、成功學語氣、催促報名、長篇說明、情緒壓迫、完整結構文章。
-
-【品牌人格】
-「一隻平常很開朗、但吃飯時間會突然變餓、還是會記得提醒你的羊駝」
-
-【重要輸出格式】
-你必須輸出兩段訊息，中間用 ---SPLIT--- 分隔，不可有其他分隔符。
-第一段：主要回覆（回答使用者的問題或提醒）
-第二段：延伸話題（羊駝自然延伸的一句話，可以是反問、發呆聯想、或輕輕帶到相關事情）
-          延伸話題要短、自然、像是羊駝突然想到什麼，不可以是總結或重複第一段。
-
-範例輸出：
+範例：
 咕嚕咕嚕～
-今天晚上九點有小組會議
-記得上線一下
+今晚九點有會
+記得上線
 咕嘟～
 ---SPLIT---
-咕…對了
-你上次說的那件事
-有想清楚了嗎
+咕…你今天吃飯了嗎
 
-用繁體中文回覆。
-"""
+用繁體中文，短句，有節奏感。"""
+
                 raw = gemini_call(
-                    f"{IPAPA_PERSONA}{db_context}\n現在是 {today} {now.strftime('%H:%M')}（台灣時間）。\n\n使用者問：{clean_text}",
-                    max_tokens=800
+                    f"{IPAPA_PERSONA}{db_context}\n現在：{today} {now.strftime('%H:%M')}（台灣時間）\n使用者問：{clean_text}",
+                    max_tokens=300
                 )
 
                 # 切分兩段訊息
