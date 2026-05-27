@@ -420,16 +420,24 @@ def unit_to_seconds(value, unit: str) -> float:
     mapping = {"seconds":1,"minutes":60,"hours":3600,"days":86400,"weeks":604800,"months":2592000,"years":31536000}
     return float(value) * mapping.get(unit, 86400)
 
-def get_all_group_ids(bot_key: str = "") -> list[str]:
-    """取得指定 bot 應發送的群組 ID 清單。"""
-    conn = get_db()
+def get_all_group_ids(bot_key: str = "", conn=None) -> list[str]:
+    """取得指定 bot 應發送的群組 ID 清單。
+    conn: 傳入既有連線可避免重複建立（呼叫方負責管理連線生命週期）。
+    """
+    _own_conn = conn is None
+    if _own_conn:
+        conn = get_db()
     cur = conn.cursor()
-    if bot_key and bot_key in BOTS:
-        cur.execute("SELECT group_id FROM groups WHERE active=TRUE AND (bot_key=%s OR bot_key IS NULL OR bot_key='')", (bot_key,))
-    else:
-        cur.execute("SELECT group_id FROM groups WHERE active=TRUE")
-    db_groups = [r["group_id"] for r in cur.fetchall()]
-    cur.close(); conn.close()
+    try:
+        if bot_key and bot_key in BOTS:
+            cur.execute("SELECT group_id FROM groups WHERE active=TRUE AND (bot_key=%s OR bot_key IS NULL OR bot_key='')", (bot_key,))
+        else:
+            cur.execute("SELECT group_id FROM groups WHERE active=TRUE")
+        db_groups = [r["group_id"] for r in cur.fetchall()]
+    finally:
+        cur.close()
+        if _own_conn:
+            conn.close()
     static = BOTS.get(bot_key, {}).get("groups", []) if bot_key else []
     return list(set(db_groups + static))
 
@@ -449,14 +457,20 @@ def find_bot_by_signature(body: bytes, sig: str) -> str:
         return next(iter(BOTS), "")
     return ""
 
-def push_to_groups(messages: list, bot_key: str = "") -> tuple[int, int, str]:
-    """回傳 (ok_count, total_count, error_hint)
+def push_to_groups(messages: list, bot_key: str = "") -> tuple[int, int, list[str]]:
+    """回傳 (ok_count, total_count, errors)
     bot_key: 指定用哪個機器人帳號發送；空字串 = 向下相容（用第一個 bot）
+    errors:  每個失敗群組的錯誤描述清單（成功時為空 list）
     """
     if not bot_key:
         bot_key = next(iter(BOTS), "")
     headers = get_bot_headers(bot_key)
-    groups  = get_all_group_ids(bot_key)
+    # 共用一條 DB 連線取群組清單，避免廣播時重複建立連線
+    conn = get_db()
+    try:
+        groups = get_all_group_ids(bot_key, conn=conn)
+    finally:
+        conn.close()
     ok = 0
     errors = []
     for gid in groups:
@@ -474,21 +488,20 @@ def push_to_groups(messages: list, bot_key: str = "") -> tuple[int, int, str]:
                     err_msg = r.text[:100]
                 logger.error(f"[{bot_key}] Push {gid[:20]}: {r.status_code} {err_msg}")
                 if r.status_code == 403 or "not a member" in err_msg.lower():
-                    hint = "機器人不在群組中（請重新邀請）"
+                    hint = f"{gid[:12]}… 機器人不在群組中（請重新邀請）"
                 elif r.status_code == 401:
                     hint = f"Token 無效（{bot_key}），請更新環境變數"
                 elif r.status_code == 429:
                     hint = f"推播次數已達免費上限（{bot_key} 每月 200 則）"
                 else:
-                    hint = f"LINE API 錯誤 {r.status_code}: {err_msg[:60]}"
+                    hint = f"{gid[:12]}… LINE API {r.status_code}: {err_msg[:50]}"
                 errors.append(hint)
         except Exception as e:
             logger.error(f"[{bot_key}] Push {gid[:20]}: exception {e}")
-            errors.append(str(e)[:80])
-    error_hint = errors[0] if errors and ok == 0 else ""
-    return ok, len(groups), error_hint
+            errors.append(f"{gid[:12]}… {str(e)[:60]}")
+    return ok, len(groups), errors
 
-def push_text(text: str, bot_key: str = "") -> tuple[int, int, str]:
+def push_text(text: str, bot_key: str = "") -> tuple[int, int, list[str]]:
     return push_to_groups([{"type": "text", "text": text}], bot_key=bot_key)
 
 
@@ -689,7 +702,7 @@ def check_and_send_reminders():
             if row["image_url"]:
                 msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
             msgs.append({"type":"text","text":row["message_text"]})
-            ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
+            ok, total, _errors = push_to_groups(msgs, bot_key=row.get("bot_key",""))
             if ok > 0:
                 cur.execute("""
                     UPDATE course_broadcast_cache
@@ -707,7 +720,7 @@ def check_and_send_reminders():
                     UPDATE course_broadcast_cache
                     SET retry_count=retry_count+1 WHERE id=%s
                 """, (row["id"],))
-                logger.warning(f"[Reminder] cache id={row['id']} failed ({_err}), retry_count+1")
+                logger.warning(f"[Reminder] cache id={row['id']} failed ({'; '.join(_errors) if _errors else 'unknown'}), retry_count+1")
 
         # ── Fallback：若課程未建快取，走舊路徑 ──
         cur.execute("""
@@ -741,7 +754,7 @@ def check_and_send_reminders():
             if row["image_url"]:
                 msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
             msgs.append({"type":"text","text":text})
-            ok, _, _ = push_to_groups(msgs, bot_key=row.get("bot_key",""))
+            ok, _, _errors = push_to_groups(msgs, bot_key=row.get("bot_key",""))
             if ok > 0:
                 cur.execute("UPDATE course_reminders SET sent=TRUE WHERE id=%s", (row["id"],))
 
@@ -778,7 +791,7 @@ def check_scheduled_broadcasts():
             if row["image_url"]:
                 msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
             msgs.append({"type":"text","text":row["content"]})
-            ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
+            ok, total, _errors = push_to_groups(msgs, bot_key=row.get("bot_key",""))
             next_run = now_tw() + timedelta(seconds=row["interval_seconds"])
 
             # 若下一次發送已超過結束時間，發送後直接停用
@@ -817,7 +830,7 @@ def check_scheduled_announcements():
             if row["image_url"]:
                 msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
             msgs.append({"type":"text","text":row["content"]})
-            ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
+            ok, total, _errors = push_to_groups(msgs, bot_key=row.get("bot_key",""))
             cur.execute(
                 "UPDATE scheduled_announcements SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
                 (now_tw().isoformat(), total, row["id"])
@@ -880,7 +893,7 @@ def check_broadcast_schedule_entries():
             except Exception as e:
                 logger.error(f"[BcastEntry] build msg error: {e}")
             if msgs:
-                ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
+                ok, total, _errors = push_to_groups(msgs, bot_key=row.get("bot_key",""))
                 cur.execute(
                     "UPDATE broadcast_schedule_entries SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
                     (now_tw().isoformat(), total, row["id"])
@@ -1405,9 +1418,9 @@ def send_course_now(cid):
     msgs.append({"type":"text","text":text})
     d2 = request.json or {}
     bot_key = d2.get("bot_key","").strip()
-    ok, total, _err = push_to_groups(msgs, bot_key=bot_key)
+    ok, total, errors = push_to_groups(msgs, bot_key=bot_key)
     resp = {"ok": ok, "total": total}
-    if _err: resp["error"] = _err
+    if errors: resp["errors"] = errors
     return jsonify(resp)
 
 @app.route("/admin/send", methods=["POST"])
@@ -1421,14 +1434,14 @@ def admin_send():
     if img_url: msgs.append({"type":"image","originalContentUrl":img_url,"previewImageUrl":img_url})
     if text:    msgs.append({"type":"text","text":text})
     if not msgs: return jsonify({"ok":0,"total":0})
-    ok, total, _err = push_to_groups(msgs, bot_key=bot_key)
+    ok, total, errors = push_to_groups(msgs, bot_key=bot_key)
 
     conn = get_db(); cur = conn.cursor()
     cur.execute("INSERT INTO announcements (content,sent_at,group_count) VALUES (%s,%s,%s)",
                 (text, isonow(), total))
     conn.commit(); cur.close(); conn.close()
     resp = {"ok":ok,"total":total}
-    if _err: resp["error"] = _err
+    if errors: resp["errors"] = errors
     return jsonify(resp)
 
 @app.route("/admin/scheduled-announcements", methods=["GET"])
@@ -1488,7 +1501,7 @@ def send_scheduled_announcement_now(aid):
     if row["image_url"]:
         msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
     msgs.append({"type":"text","text":row["content"]})
-    ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
+    ok, total, _errors = push_to_groups(msgs, bot_key=row.get("bot_key",""))
     cur.execute("UPDATE scheduled_announcements SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
                 (isonow(), total, aid))
     conn.commit(); cur.close(); conn.close()
@@ -1608,7 +1621,7 @@ def send_broadcast_entry_now(eid):
             if b["image_url"]: msgs.append({"type":"image","originalContentUrl":b["image_url"],"previewImageUrl":b["image_url"]})
             msgs.append({"type":"text","text":b["content"]})
     if not msgs: cur.close(); conn.close(); return jsonify({"ok":False,"error":"無法組建訊息"})
-    ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
+    ok, total, _errors = push_to_groups(msgs, bot_key=row.get("bot_key",""))
     cur.execute("UPDATE broadcast_schedule_entries SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
                 (isonow(), total, eid))
     conn.commit(); cur.close(); conn.close()
@@ -1721,7 +1734,7 @@ def send_scheduled_now(sid):
     if row["image_url"]:
         msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
     msgs.append({"type":"text","text":row["content"]})
-    ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
+    ok, total, _errors = push_to_groups(msgs, bot_key=row.get("bot_key",""))
     next_run = (now_tw() + timedelta(seconds=row["interval_seconds"])).isoformat()
     cur.execute("UPDATE scheduled_broadcasts SET next_run=%s WHERE id=%s", (next_run, sid))
     conn.commit(); cur.close(); conn.close()
@@ -2492,7 +2505,6 @@ def handle_text(event, bot_key: str = ""):
 用繁體中文，短句，有節奏感。"""
 
                 # ── 讀取此用戶在此群組的對話記憶 ──
-                gid = event["source"].get("groupId", "")
                 memory = get_chat_memory(user_id, gid, limit=3)
                 memory_text = ""
                 if memory:
@@ -2514,7 +2526,6 @@ def handle_text(event, bot_key: str = ""):
 
                 # ── 儲存這輪對話到記憶 & 完整紀錄 ──
                 assistant_record = msg1 + ("\n" + msg2 if msg2 else "")
-                gid = event["source"].get("groupId", "")
                 save_chat_memory(user_id, gid, clean_text, assistant_record)
                 # 寫入完整對話紀錄（不自動刪除）
                 try:
@@ -2548,7 +2559,7 @@ def handle_text(event, bot_key: str = ""):
         return
 
     if text.startswith("/公告 "):
-        ok, total, _err = push_text(f"📢 {text[4:].strip()}", bot_key=bot_key)
+        ok, total, _errors = push_text(f"📢 {text[4:].strip()}", bot_key=bot_key)
         reply_message(reply_token, f"✅ 已發送到 {ok}/{total} 個群組", bot_key=bot_key)
 
     elif text.startswith("/新增課程 ") or text.startswith("/加課 "):
