@@ -1872,9 +1872,16 @@ def ai_parse_multi_v2():
         # 擷取第一個完整 JSON 陣列（忽略前後雜訊）
         start = ai_text.find("["); end = ai_text.rfind("]") + 1
         if start == -1 or end == 0:
-            logger.error(f"[ParseMultiV2] Raw AI text: {ai_text[:300]!r}")
-            raise Exception(f"AI 未回傳有效 JSON 陣列（回傳內容：{ai_text[:80]!r}）")
-        courses = json.loads(ai_text[start:end].strip())
+            # Gemini 有時回傳單一物件而非陣列，自動包成陣列
+            obj_start = ai_text.find("{"); obj_end = ai_text.rfind("}") + 1
+            if obj_start != -1 and obj_end > 0:
+                logger.warning(f"[ParseMultiV2] Got object instead of array, wrapping. Raw: {ai_text[:200]!r}")
+                courses = [json.loads(ai_text[obj_start:obj_end].strip())]
+            else:
+                logger.error(f"[ParseMultiV2] Raw AI text: {ai_text[:300]!r}")
+                raise Exception(f"AI 未回傳有效 JSON 陣列（回傳內容：{ai_text[:80]!r}）")
+        else:
+            courses = json.loads(ai_text[start:end].strip())
         if not isinstance(courses, list) or len(courses) == 0:
             raise Exception("AI 未解析出任何活動")
 
