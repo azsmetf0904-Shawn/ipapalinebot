@@ -492,7 +492,15 @@ def check_scheduled_broadcasts():
             if row["image_url"]:
                 msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
             msgs.append({"type":"text","text":row["content"]})
-            ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
+            # 支援多機器人（bot_key 為逗號分隔字串）
+            bot_keys = [k.strip() for k in (row.get("bot_key","") or "").split(",") if k.strip()]
+            if bot_keys:
+                ok = total = 0
+                for bk in bot_keys:
+                    _ok, _total, _err = push_to_groups(msgs, bot_key=bk)
+                    ok += _ok; total += _total
+            else:
+                ok, total, _err = push_to_groups(msgs)
             next_run = now_tw() + timedelta(seconds=row["interval_seconds"])
 
             # 若下一次發送已超過結束時間，發送後直接停用
@@ -1158,7 +1166,14 @@ def send_scheduled_now(sid):
     if row["image_url"]:
         msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
     msgs.append({"type":"text","text":row["content"]})
-    ok, total, _err = push_to_groups(msgs, bot_key=row.get("bot_key",""))
+    bot_keys = [k.strip() for k in (row.get("bot_key","") or "").split(",") if k.strip()]
+    if bot_keys:
+        ok = total = 0
+        for bk in bot_keys:
+            _ok, _total, _err = push_to_groups(msgs, bot_key=bk)
+            ok += _ok; total += _total
+    else:
+        ok, total, _err = push_to_groups(msgs)
     next_run = (now_tw() + timedelta(seconds=row["interval_seconds"])).isoformat()
     cur.execute("UPDATE scheduled_broadcasts SET next_run=%s WHERE id=%s", (next_run, sid))
     conn.commit(); cur.close(); conn.close()
