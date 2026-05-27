@@ -359,11 +359,35 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS cbc_pending ON course_broadcast_cache (send_at, status);
         CREATE INDEX IF NOT EXISTS cbc_course  ON course_broadcast_cache (course_id);
+
+        CREATE TABLE IF NOT EXISTS quick_reply_buttons (
+            id         SERIAL PRIMARY KEY,
+            label      TEXT NOT NULL,
+            btn_type   TEXT NOT NULL DEFAULT 'tag',
+            tags       TEXT NOT NULL DEFAULT '',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            active     BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TIMESTAMPTZ NOT NULL
+        );
     """)
     # 預設分類
     for name, color in [("招商活動","#FF6B35"),("系統會議","#1A73E8"),("課程培訓","#06C755"),("其他","#9E9E9E")]:
         cur.execute("INSERT INTO categories (name,color,created_at) VALUES (%s,%s,%s) ON CONFLICT (name) DO NOTHING",
                     (name, color, isonow()))
+    # 預設 Quick Reply 按鈕（只在表格為空時插入）
+    cur.execute("SELECT COUNT(*) AS cnt FROM quick_reply_buttons")
+    if cur.fetchone()["cnt"] == 0:
+        defaults = [
+            ("近期課程",   "all_courses", "",                0),
+            ("會議",       "tag",         "會議,線上,會前會", 1),
+            ("招商＆內訓", "tag",         "招商,說明會,內訓,教練,培訓,工作坊,系統", 2),
+            ("最新公告",   "announcement","",                3),
+        ]
+        for label, btn_type, tags, sort_order in defaults:
+            cur.execute(
+                "INSERT INTO quick_reply_buttons (label,btn_type,tags,sort_order,active,created_at) VALUES (%s,%s,%s,%s,TRUE,%s)",
+                (label, btn_type, tags, sort_order, isonow())
+            )
     conn.commit()
     cur.close()
     conn.close()
@@ -538,28 +562,50 @@ def reply_with_quick_reply(reply_token: str, text: str, options: list, bot_key: 
             }]
         }, timeout=10)
 
-# Postback Quick Reply 選單定義（data 為後端識別碼，label 為顯示文字）
-POSTBACK_MENU_ITEMS = [
-    {"data": "pb_recent_courses",  "label": "近期課程"},
-    {"data": "pb_meeting",         "label": "會議"},
-    {"data": "pb_recruitment",     "label": "招商說明會"},
-    {"data": "pb_training",        "label": "內訓 教練"},
-    {"data": "pb_announcement",    "label": "最新公告"},
-]
+# Postback Quick Reply 選單：從 DB 動態撈，不再寫死
+# btn_type: 'tag'=標籤查課程, 'all_courses'=所有近期課程, 'announcement'=公告
+
+def get_qr_buttons() -> list[dict]:
+    """從 DB 取得啟用中的 Quick Reply 按鈕，最多 13 個（LINE 上限）。
+    回傳 [{"id":1,"label":"會議","btn_type":"tag","tags":["會議","線上","會前會"]}, ...]
+    """
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("""
+            SELECT id, label, btn_type, tags
+            FROM quick_reply_buttons
+            WHERE active = TRUE
+            ORDER BY sort_order ASC, id ASC
+            LIMIT 13
+        """)
+        rows = cur.fetchall()
+        cur.close(); conn.close()
+        result = []
+        for r in rows:
+            tags = [t.strip() for t in r["tags"].split(",") if t.strip()] if r["tags"] else []
+            result.append({"id": r["id"], "label": r["label"], "btn_type": r["btn_type"], "tags": tags})
+        return result
+    except Exception as e:
+        logger.warning(f"[QR] get_qr_buttons failed: {e}")
+        return []
 
 def _make_postback_qr_items() -> list:
-    """產生 postback action 的 Quick Reply items（點下去不在聊天室顯示文字）"""
+    """產生 postback action 的 Quick Reply items（動態從 DB 撈）"""
+    buttons = get_qr_buttons()
+    if not buttons:
+        # fallback：若 DB 無資料則返回空（避免壞掉）
+        return []
     return [
         {
             "type": "action",
             "action": {
                 "type": "postback",
-                "label": item["label"],
-                "data":  item["data"],
-                "displayText": f"查詢：{item['label']}",  # 使用者端顯示（不發送給 bot）
+                "label": btn["label"][:20],
+                "data":  f"qrb_{btn['id']}",
+                "displayText": f"查詢：{btn['label']}",
             }
         }
-        for item in POSTBACK_MENU_ITEMS
+        for btn in buttons
     ]
 
 def reply_with_postback_menu(reply_token: str, text: str, bot_key: str = ""):
@@ -2745,6 +2791,73 @@ def handle_leave(event):
     conn.commit(); cur.close(); conn.close()
     logger.info(f"Chat left: {gid}")
 
+# ── Quick Reply 按鈕管理 API ──
+
+@app.route("/admin/quick-reply-buttons", methods=["GET"])
+def get_quick_reply_buttons():
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("""
+        SELECT id, label, btn_type, tags, sort_order, active, created_at
+        FROM quick_reply_buttons
+        ORDER BY sort_order ASC, id ASC
+    """)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    for r in rows:
+        if r.get("created_at"): r["created_at"] = str(r["created_at"])
+    return jsonify({"buttons": rows})
+
+@app.route("/admin/quick-reply-buttons", methods=["POST"])
+def add_quick_reply_button():
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    d = request.json or {}
+    label    = d.get("label","").strip()
+    btn_type = d.get("btn_type","tag").strip()
+    tags     = d.get("tags","").strip()
+    sort_order = int(d.get("sort_order", 0))
+    active   = bool(d.get("active", True))
+    if not label:
+        return jsonify({"ok":False,"error":"請填寫按鈕名稱"})
+    if btn_type not in ("tag","all_courses","announcement"):
+        return jsonify({"ok":False,"error":"btn_type 無效"})
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO quick_reply_buttons (label,btn_type,tags,sort_order,active,created_at)
+        VALUES (%s,%s,%s,%s,%s,%s) RETURNING id
+    """, (label, btn_type, tags, sort_order, active, isonow()))
+    new_id = cur.fetchone()["id"]
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok":True,"id":new_id})
+
+@app.route("/admin/quick-reply-buttons/<int:bid>", methods=["PUT"])
+def update_quick_reply_button(bid):
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    d = request.json or {}
+    label    = d.get("label","").strip()
+    btn_type = d.get("btn_type","tag").strip()
+    tags     = d.get("tags","").strip()
+    sort_order = int(d.get("sort_order", 0))
+    active   = bool(d.get("active", True))
+    if not label:
+        return jsonify({"ok":False,"error":"請填寫按鈕名稱"})
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("""
+        UPDATE quick_reply_buttons
+        SET label=%s, btn_type=%s, tags=%s, sort_order=%s, active=%s
+        WHERE id=%s
+    """, (label, btn_type, tags, sort_order, active, bid))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok":True})
+
+@app.route("/admin/quick-reply-buttons/<int:bid>", methods=["DELETE"])
+def delete_quick_reply_button(bid):
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("DELETE FROM quick_reply_buttons WHERE id=%s", (bid,))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok":True})
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     sig = request.headers.get("X-Line-Signature","")
@@ -2768,89 +2881,79 @@ def webhook():
     return "OK"
 
 # ── Postback 事件處理（Quick Reply 按鈕觸發）──
-# data → (clean_text 給關鍵字邏輯用, log 用標籤)
-_POSTBACK_DATA_MAP = {
-    "pb_recent_courses": ("近期課程",  "近期課程"),
-    "pb_meeting":        ("會議",      "會議"),
-    "pb_recruitment":    ("招商說明會", "招商說明會"),
-    "pb_training":       ("內訓 教練", "內訓 教練"),
-    "pb_announcement":   ("公告",      "最新公告"),
-}
-
 def handle_postback(event, bot_key: str = ""):
-    """
-    處理 postback 事件（使用者點 Quick Reply 按鈕後觸發）。
-    直接對應到關鍵字查詢邏輯，回覆結果。
-    """
     user_id     = event["source"].get("userId", "")
     reply_token = event.get("replyToken", "")
     data        = event.get("postback", {}).get("data", "")
     gid         = event["source"].get("groupId", "")
 
-    if data not in _POSTBACK_DATA_MAP:
+    # 只處理動態按鈕（格式 qrb_{id}）
+    if not data.startswith("qrb_"):
         logger.info(f"[Postback] 未知 data={data!r}，略過")
         return
 
-    clean_text, log_label = _POSTBACK_DATA_MAP[data]
-    logger.info(f"[Postback] user={user_id} data={data!r} → query={clean_text!r}")
+    try:
+        btn_id = int(data[4:])
+    except ValueError:
+        logger.info(f"[Postback] data 格式錯誤: {data!r}")
+        return
 
-    # 冷卻機制
+    # 從 DB 取按鈕設定
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT id, label, btn_type, tags FROM quick_reply_buttons WHERE id=%s AND active=TRUE", (btn_id,))
+        btn = cur.fetchone()
+        cur.close(); conn.close()
+    except Exception as e:
+        logger.error(f"[Postback] DB fetch button error: {e}")
+        return
+
+    if not btn:
+        logger.info(f"[Postback] 找不到按鈕 id={btn_id}")
+        return
+
+    label    = btn["label"]
+    btn_type = btn["btn_type"]
+    tags     = [t.strip() for t in btn["tags"].split(",") if t.strip()] if btn["tags"] else []
+
+    logger.info(f"[Postback] user={user_id} btn={label!r} type={btn_type} tags={tags}")
+
     if check_cooldown(user_id):
         logger.info(f"[Postback/Cooldown] user={user_id} 冷卻中，略過")
         return
 
-    # 疲累模式
     if is_tired_mode():
         reply_message(reply_token, get_tired_message(), bot_key=bot_key)
         return
 
-    # 直接走關鍵字查詢邏輯
     try:
         now   = now_tw()
         today = now.date().isoformat()
-        _conn = get_db(); _cur = _conn.cursor()
+        conn  = get_db(); cur = conn.cursor()
         reply_lines = []
 
-        is_course_query    = any(kw in clean_text for kw in COURSE_KEYWORDS)
-        is_broadcast_query = any(kw in clean_text for kw in BROADCAST_KEYWORDS)
-        _specific_types = []
-        if any(kw in clean_text for kw in MEETING_KEYWORDS):
-            _specific_types += ["會議", "線上", "會前會"]
-        if any(kw in clean_text for kw in RECRUITMENT_KEYWORDS):
-            _specific_types += ["招商", "說明會"]
-        if any(kw in clean_text for kw in TRAINING_KEYWORDS):
-            _specific_types += ["內訓", "教練", "培訓", "工作坊", "系統"]
-        is_specific_query = bool(_specific_types)
-
-        if is_specific_query:
-            like_clauses = " OR ".join(["c.title ILIKE %s OR c.description ILIKE %s"] * len(_specific_types))
-            like_params  = [p for kw in _specific_types for p in (f"%{kw}%", f"%{kw}%")]
-            _cur.execute(f"""
-                SELECT c.title, c.course_date::text, c.course_time,
-                       c.location, c.description, cat.name AS category
-                FROM courses c
-                LEFT JOIN categories cat ON c.category_id = cat.id
-                WHERE c.course_date >= %s AND ({like_clauses})
-                ORDER BY c.course_date ASC LIMIT 8
-            """, (today, *like_params))
-            rows = _cur.fetchall()
+        if btn_type == "announcement":
+            # ── 公告查詢 ──
+            cur.execute("""
+                SELECT title, content, next_run FROM scheduled_broadcasts
+                WHERE active = TRUE ORDER BY next_run ASC LIMIT 5
+            """)
+            rows = cur.fetchall()
             if rows:
-                type_label = "、".join(dict.fromkeys(_specific_types))
-                reply_lines.append(f"咕嚕咕嚕～\n我查了一下「{type_label[:20]}」相關的\n")
+                reply_lines.append("嗚咕～\n最新公告在這\n")
                 for r in rows:
-                    cat  = f"[{r['category']}] " if r.get("category") else ""
-                    loc  = f"\n   📍 {r['location']}" if r.get("location") else ""
-                    desc = r.get("description", "")
-                    links = re.findall(r'https?://\S+', desc)
-                    link_line = ("\n   🔗 " + "\n   🔗 ".join(links[:2])) if links else (f"\n   💬 {desc.strip()[:80]}" if desc.strip() else "")
-                    reply_lines.append(f"📅 {r['course_date']} {r['course_time']} {cat}{r['title']}{loc}{link_line}")
-                reply_lines.append("\n咕嘟～這幾場記好哦")
+                    next_run = str(r["next_run"])[:16] if r.get("next_run") else ""
+                    reply_lines.append(f"📢 {r['title']}")
+                    reply_lines.append(f"   {str(r['content'])[:60]}")
+                    if next_run:
+                        reply_lines.append(f"   🕐 {next_run}")
+                reply_lines.append("\n咕嘟～")
             else:
-                type_label = "、".join(dict.fromkeys(_specific_types))
-                reply_lines.append(f"咕嚕～\n「{type_label[:20]}」近期好像沒有排\n咕…")
+                reply_lines.append("咕嚕～\n目前沒有公告\n咕…")
 
-        if is_course_query and not is_specific_query:
-            _cur.execute("""
+        elif btn_type == "all_courses":
+            # ── 所有近期課程 ──
+            cur.execute("""
                 SELECT c.title, c.course_date::text, c.course_time,
                        c.location, c.description, cat.name AS category
                 FROM courses c
@@ -2858,7 +2961,7 @@ def handle_postback(event, bot_key: str = ""):
                 WHERE c.course_date >= %s
                 ORDER BY c.course_date ASC LIMIT 8
             """, (today,))
-            rows = _cur.fetchall()
+            rows = cur.fetchall()
             if rows:
                 reply_lines.append("咕嚕咕嚕～\n近期的行程我整理一下\n")
                 for r in rows:
@@ -2872,43 +2975,46 @@ def handle_postback(event, bot_key: str = ""):
             else:
                 reply_lines.append("咕嚕～\n近期好像沒有排課\n咕…")
 
-        if is_broadcast_query:
-            _cur.execute("""
-                SELECT title, content, next_run FROM scheduled_broadcasts
-                WHERE active = TRUE ORDER BY next_run ASC LIMIT 5
-            """)
-            rows = _cur.fetchall()
+        elif btn_type == "tag" and tags:
+            # ── 標籤查詢 ──
+            like_clauses = " OR ".join(["c.title ILIKE %s OR c.description ILIKE %s"] * len(tags))
+            like_params  = [p for t in tags for p in (f"%{t}%", f"%{t}%")]
+            cur.execute(f"""
+                SELECT c.title, c.course_date::text, c.course_time,
+                       c.location, c.description, cat.name AS category
+                FROM courses c
+                LEFT JOIN categories cat ON c.category_id = cat.id
+                WHERE c.course_date >= %s AND ({like_clauses})
+                ORDER BY c.course_date ASC LIMIT 8
+            """, (today, *like_params))
+            rows = cur.fetchall()
             if rows:
-                if reply_lines:
-                    reply_lines.append("")
-                reply_lines.append("嗚咕～\n最新公告在這\n")
+                reply_lines.append(f"咕嚕咕嚕～\n我查了一下「{label}」相關的\n")
                 for r in rows:
-                    next_run = str(r["next_run"])[:16] if r.get("next_run") else ""
-                    reply_lines.append(f"📢 {r['title']}")
-                    reply_lines.append(f"   {str(r['content'])[:60]}")
-                    if next_run:
-                        reply_lines.append(f"   🕐 {next_run}")
-                reply_lines.append("\n咕嘟～")
-            elif not reply_lines:
-                reply_lines.append("咕嚕～\n目前沒有公告\n咕…")
-
-        if not reply_lines:
+                    cat  = f"[{r['category']}] " if r.get("category") else ""
+                    loc  = f"\n   📍 {r['location']}" if r.get("location") else ""
+                    desc = r.get("description", "")
+                    links = re.findall(r'https?://\S+', desc)
+                    link_line = ("\n   🔗 " + "\n   🔗 ".join(links[:2])) if links else (f"\n   💬 {desc.strip()[:80]}" if desc.strip() else "")
+                    reply_lines.append(f"📅 {r['course_date']} {r['course_time']} {cat}{r['title']}{loc}{link_line}")
+                reply_lines.append("\n咕嘟～這幾場記好哦")
+            else:
+                reply_lines.append(f"咕嚕～\n「{label}」近期好像沒有排\n咕…")
+        else:
             reply_lines.append("咕嚕～\n查了一下沒找到相關資料\n咕…")
 
-        _cur.close(); _conn.close()
+        cur.close(); conn.close()
         msg = "\n".join(reply_lines)
-
-        # 回覆結果 + postback 選單
         reply_with_postback_menu(reply_token, msg, bot_key=bot_key)
 
         # 寫入 chat_logs
         try:
-            _lconn = get_db(); _lcur = _lconn.cursor()
-            _lcur.execute("""
+            lconn = get_db(); lcur = lconn.cursor()
+            lcur.execute("""
                 INSERT INTO chat_logs (group_id, group_name, user_id, question, answer, created_at)
                 VALUES (%s, (SELECT group_name FROM groups WHERE group_id=%s), %s, %s, %s, %s)
-            """, (gid, gid, user_id, f"[postback] {log_label}", msg, isonow()))
-            _lconn.commit(); _lcur.close(); _lconn.close()
+            """, (gid, gid, user_id, f"[qr] {label}", msg, isonow()))
+            lconn.commit(); lcur.close(); lconn.close()
         except Exception as le:
             logger.warning(f"[Postback/ChatLog] write failed: {le}")
 
