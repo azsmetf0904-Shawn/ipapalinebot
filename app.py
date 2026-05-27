@@ -540,19 +540,35 @@ def init_db():
 def _startup_init_db(max_retries: int = 5, delay: int = 3):
     """帶重試的 DB 初始化，適合 Railway cold start。
     Railway 有時 DB 比 app 晚幾秒啟動，裸呼叫 init_db() 會讓 gunicorn 直接 crash。
+    回傳 True = 成功，False = 全部失敗。
     """
     for attempt in range(1, max_retries + 1):
         try:
             init_db()
             logger.info(f"[Startup] init_db OK (attempt {attempt})")
-            return
+            return True
         except Exception as e:
             logger.warning(f"[Startup] init_db attempt {attempt}/{max_retries} failed: {e}")
             if attempt < max_retries:
                 time.sleep(delay)
     logger.error("[Startup] init_db failed after all retries, app may be unstable")
+    return False
 
-_startup_init_db()
+# ── 模組載入時立即嘗試（gunicorn preload / flask run 都會跑到）──
+_db_ready = _startup_init_db()
+
+# ── Gunicorn prefork 模式下 worker 各自 fork，
+#    若模組載入時 DB 尚未就緒，在第一個 request 前再試一次。──
+_before_request_done = False
+
+@app.before_request
+def _ensure_db_ready():
+    global _db_ready, _before_request_done
+    if _db_ready or _before_request_done:
+        return
+    _before_request_done = True          # 只重試一次，避免每個 request 都等
+    logger.warning("[Startup] DB not ready at import time, retrying before first request…")
+    _db_ready = _startup_init_db(max_retries=3, delay=2)
 
 # ── 對話記憶函式 ──
 def get_chat_memory(user_id: str, group_id: str, limit: int = 3) -> list[dict]:
@@ -1417,8 +1433,13 @@ def health():
 @app.route("/init-db")
 def init_db_route():
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    init_db()
-    return "DB initialized OK"
+    try:
+        init_db()
+        global _db_ready
+        _db_ready = True
+        return jsonify({"ok": True, "message": "DB initialized OK", "time": now_tw().strftime("%Y-%m-%d %H:%M:%S")})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 # ── Admin API ──
 
