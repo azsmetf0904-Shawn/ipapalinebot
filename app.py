@@ -1872,16 +1872,9 @@ def ai_parse_multi_v2():
         # 擷取第一個完整 JSON 陣列（忽略前後雜訊）
         start = ai_text.find("["); end = ai_text.rfind("]") + 1
         if start == -1 or end == 0:
-            # Gemini 有時回傳單一物件而非陣列，自動包成陣列
-            obj_start = ai_text.find("{"); obj_end = ai_text.rfind("}") + 1
-            if obj_start != -1 and obj_end > 0:
-                logger.warning(f"[ParseMultiV2] Got object instead of array, wrapping. Raw: {ai_text[:200]!r}")
-                courses = [json.loads(ai_text[obj_start:obj_end].strip())]
-            else:
-                logger.error(f"[ParseMultiV2] Raw AI text: {ai_text[:300]!r}")
-                raise Exception(f"AI 未回傳有效 JSON 陣列（回傳內容：{ai_text[:80]!r}）")
-        else:
-            courses = json.loads(ai_text[start:end].strip())
+            logger.error(f"[ParseMultiV2] Raw AI text: {ai_text[:300]!r}")
+            raise Exception(f"AI 未回傳有效 JSON 陣列（回傳內容：{ai_text[:80]!r}）")
+        courses = json.loads(ai_text[start:end].strip())
         if not isinstance(courses, list) or len(courses) == 0:
             raise Exception("AI 未解析出任何活動")
 
@@ -2171,11 +2164,24 @@ def handle_text(event, bot_key: str = ""):
                                 "本週", "今天", "明天", "最近", "課表", "安排", "幾號", "什麼時候",
                                 "會議", "線上", "小組", "上課", "培訓", "工作坊", "典禮"]
             BROADCAST_KEYWORDS = ["公告", "最新消息", "有什麼消息", "廣播", "通知"]
+            # 特定活動類型關鍵字 → 精確搜尋
+            MEETING_KEYWORDS   = ["會議", "線上會議", "開會", "會前會"]
+            RECRUITMENT_KEYWORDS = ["招商", "說明會", "招商說明"]
+            TRAINING_KEYWORDS  = ["內訓", "教練", "系統人員", "培訓", "工作坊"]
 
             is_course_query    = any(kw in clean_text for kw in COURSE_KEYWORDS)
             is_broadcast_query = any(kw in clean_text for kw in BROADCAST_KEYWORDS)
+            # 精確活動類型（取聯集後做 ILIKE 過濾）
+            _specific_types = []
+            if any(kw in clean_text for kw in MEETING_KEYWORDS):
+                _specific_types += ["會議", "線上", "會前會"]
+            if any(kw in clean_text for kw in RECRUITMENT_KEYWORDS):
+                _specific_types += ["招商", "說明會"]
+            if any(kw in clean_text for kw in TRAINING_KEYWORDS):
+                _specific_types += ["內訓", "教練", "培訓", "工作坊", "系統"]
+            is_specific_query = bool(_specific_types)
 
-            if is_course_query or is_broadcast_query:
+            if is_course_query or is_broadcast_query or is_specific_query:
                 logger.info(f"[Shortcut Reply] keyword matched: {clean_text[:40]!r}")
                 try:
                     now = now_tw()
@@ -2184,10 +2190,49 @@ def handle_text(event, bot_key: str = ""):
 
                     reply_lines = []
 
-                    if is_course_query:
+                    # ── 精確活動類型查詢（會議 / 招商 / 內訓）──
+                    if is_specific_query:
+                        # 組 ILIKE 條件
+                        like_clauses = " OR ".join(["c.title ILIKE %s OR c.description ILIKE %s"] * len(_specific_types))
+                        like_params  = [p for kw in _specific_types for p in (f"%{kw}%", f"%{kw}%")]
+                        _cur.execute(f"""
+                            SELECT c.title, c.course_date::text, c.course_time,
+                                   c.location, c.description, cat.name AS category
+                            FROM courses c
+                            LEFT JOIN categories cat ON c.category_id = cat.id
+                            WHERE c.course_date >= %s AND ({like_clauses})
+                            ORDER BY c.course_date ASC
+                            LIMIT 8
+                        """, (today, *like_params))
+                        rows = _cur.fetchall()
+                        if rows:
+                            type_label = "、".join(dict.fromkeys(_specific_types))  # 去重
+                            reply_lines.append(f"咕嚕咕嚕～\n幫你找了一下「{type_label[:20]}」相關活動\n")
+                            for r in rows:
+                                cat = f"[{r['category']}] " if r.get("category") else ""
+                                loc = f"\n   📍 {r['location']}" if r.get("location") else ""
+                                desc = r.get("description","")
+                                # 擷取描述中的連結（http 開頭）
+                                import re as _re_link
+                                links = _re_link.findall(r'https?://\S+', desc)
+                                link_line = ""
+                                if links:
+                                    link_line = "\n   🔗 " + "\n   🔗 ".join(links[:2])
+                                elif desc.strip():
+                                    link_line = f"\n   💬 {desc.strip()[:80]}"
+                                reply_lines.append(
+                                    f"📅 {r['course_date']} {r['course_time']} {cat}{r['title']}"
+                                    f"{loc}{link_line}"
+                                )
+                            reply_lines.append("\n咕嘟～有需要再問我")
+                        else:
+                            type_label = "、".join(dict.fromkeys(_specific_types))
+                            reply_lines.append(f"咕嚕～\n找不到近期的「{type_label[:20]}」相關活動\n咕…")
+
+                    if is_course_query and not is_specific_query:
                         _cur.execute("""
                             SELECT c.title, c.course_date::text, c.course_time,
-                                   c.location, cat.name AS category
+                                   c.location, c.description, cat.name AS category
                             FROM courses c
                             LEFT JOIN categories cat ON c.category_id = cat.id
                             WHERE c.course_date >= %s
@@ -2199,8 +2244,17 @@ def handle_text(event, bot_key: str = ""):
                             reply_lines.append("咕嚕咕嚕～\n幫你整理一下近期的課\n")
                             for r in rows:
                                 cat = f"[{r['category']}] " if r.get("category") else ""
-                                loc = f" 📍{r['location']}" if r.get("location") else ""
-                                reply_lines.append(f"📅 {r['course_date']} {r['course_time']} {cat}{r['title']}{loc}")
+                                loc = f"\n   📍 {r['location']}" if r.get("location") else ""
+                                desc = r.get("description","")
+                                import re as _re_link2
+                                links = _re_link2.findall(r'https?://\S+', desc)
+                                link_line = ""
+                                if links:
+                                    link_line = "\n   🔗 " + "\n   🔗 ".join(links[:2])
+                                reply_lines.append(
+                                    f"📅 {r['course_date']} {r['course_time']} {cat}{r['title']}"
+                                    f"{loc}{link_line}"
+                                )
                             reply_lines.append("\n咕嘟～記得去")
                         else:
                             reply_lines.append("咕嚕～\n最近好像沒有課\n咕…")
@@ -2228,6 +2282,10 @@ def handle_text(event, bot_key: str = ""):
                         else:
                             if not reply_lines:
                                 reply_lines.append("咕嚕～\n目前沒有公告\n咕…")
+
+                    # 若三種查詢都沒結果才 fallback
+                    if not reply_lines:
+                        reply_lines.append("咕嚕～\n沒找到相關資料\n咕…")
 
                     _cur.close(); _conn.close()
 
@@ -2490,6 +2548,35 @@ def handle_join(event, bot_key: str = ""):
     """, (gid, isonow(), group_name, bot_key))
     conn.commit(); cur.close(); conn.close()
     logger.info(f"Chat joined: {gid} name={group_name!r} bot={bot_key!r}")
+
+    # ── 自我介紹 ──
+    intro = (
+        "咕嚕咕嚕～大家好！\n"
+        "我是 IPAPA 羊駝小幫手 🦙\n\n"
+        "📋 我能做什麼：\n"
+        "• 幫大家查詢近期課程、會議、招商說明會、內訓等活動的日期、地點與連結\n"
+        "• 轉達公告通知\n"
+        "• 在指定時間提前提醒大家重要行程\n\n"
+        "📌 怎麼叫我：\n"
+        "• @我 或 直接 reply 我的訊息\n"
+        "• 例如：「@羊駝 下週有什麼會議？」\n"
+        "• 例如：「@羊駝 招商說明會是什麼時候？」\n\n"
+        "🌿 操作守則：\n"
+        "• 我是溫柔的羊駝，請輕聲問我～\n"
+        "• 太多人同時叫我可能需要稍等一下\n"
+        "• 若我發呆沒回應，再叫一次就好\n\n"
+        "咕嘟～請大家多多指教，也請溫柔對待我 🙏"
+    )
+    headers = get_bot_headers(bot_key) if bot_key else HEADERS
+    try:
+        requests.post(
+            "https://api.line.me/v2/bot/message/push",
+            headers=headers,
+            json={"to": gid, "messages": [{"type": "text", "text": intro}]},
+            timeout=10
+        )
+    except Exception as e:
+        logger.warning(f"handle_join intro push failed: {e}")
 
 def handle_leave(event):
     src = event["source"]
