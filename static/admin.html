@@ -504,6 +504,7 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.55; }
       <button class="nav-item" onclick="go('groups',this)"><i class="ti ti-users"></i> 群組管理</button>
       <button class="nav-item" onclick="go('categories',this)"><i class="ti ti-tag"></i> 分類管理</button>
       <button class="nav-item" onclick="go('quickreply',this)"><i class="ti ti-message-bolt"></i> 快速回覆</button>
+      <button class="nav-item" onclick="go('keywords',this)"><i class="ti ti-vocabulary"></i> 關鍵字設定</button>
       <div class="nav-section">機器人</div>
       <button class="nav-item" onclick="go('persona',this)"><i class="ti ti-mood-edit"></i> 人設設定</button>
       <button class="nav-item" onclick="go('wander',this)"><i class="ti ti-mood-happy"></i> 羊駝發呆</button>
@@ -1049,6 +1050,88 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.55; }
         </div>
       </div>
 
+      <!-- 關鍵字設定 -->
+      <div id="panel-keywords" class="panel">
+        <div class="card">
+          <div class="card-head"><span class="card-title"><i class="ti ti-vocabulary"></i> 關鍵字設定</span></div>
+          <p style="font-size:12px;color:var(--ink-3);margin-bottom:4px">機器人收到訊息時，先比對關鍵字決定要查什麼；命中才查資料庫，<strong>不消耗 AI token</strong>。修改後約 2 分鐘內生效。</p>
+          <p style="font-size:12px;color:var(--ink-4);margin-bottom:20px">每格填入關鍵字，<strong>逗號分隔</strong>。空白會自動忽略。</p>
+
+          <div style="display:flex;flex-direction:column;gap:16px">
+
+            <div class="fg">
+              <label style="display:flex;align-items:center;gap:6px">
+                <span style="background:#06C755;color:#fff;font-size:11px;padding:2px 8px;border-radius:20px">課程</span>
+                課程查詢關鍵字
+                <span style="font-size:11px;color:var(--ink-4)">（命中 → 查課程清單）</span>
+              </label>
+              <textarea id="kw-kw_course" rows="3" style="font-size:13px;font-family:monospace"></textarea>
+            </div>
+
+            <div class="fg">
+              <label style="display:flex;align-items:center;gap:6px">
+                <span style="background:#1A5CC4;color:#fff;font-size:11px;padding:2px 8px;border-radius:20px">公告</span>
+                公告查詢關鍵字
+                <span style="font-size:11px;color:var(--ink-4)">（命中 → 查廣播/公告）</span>
+              </label>
+              <textarea id="kw-kw_broadcast" rows="2" style="font-size:13px;font-family:monospace"></textarea>
+            </div>
+
+            <div style="background:var(--bg-2);border-radius:var(--radius);padding:16px">
+              <div style="font-size:12px;font-weight:600;color:var(--ink-3);margin-bottom:12px">精確活動類型（命中時額外篩選標題/描述）</div>
+              <div style="display:flex;flex-direction:column;gap:12px">
+                <div class="fg">
+                  <label style="display:flex;align-items:center;gap:6px">
+                    <span style="background:#E65100;color:#fff;font-size:11px;padding:2px 8px;border-radius:20px">會議</span>
+                    會議相關關鍵字
+                  </label>
+                  <input id="kw-kw_meeting" type="text" style="font-size:13px;font-family:monospace">
+                </div>
+                <div class="fg">
+                  <label style="display:flex;align-items:center;gap:6px">
+                    <span style="background:#7B1FA2;color:#fff;font-size:11px;padding:2px 8px;border-radius:20px">招商</span>
+                    招商相關關鍵字
+                  </label>
+                  <input id="kw-kw_recruitment" type="text" style="font-size:13px;font-family:monospace">
+                </div>
+                <div class="fg">
+                  <label style="display:flex;align-items:center;gap:6px">
+                    <span style="background:#00796B;color:#fff;font-size:11px;padding:2px 8px;border-radius:20px">培訓</span>
+                    內訓/培訓相關關鍵字
+                  </label>
+                  <input id="kw-kw_training" type="text" style="font-size:13px;font-family:monospace">
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          <div style="display:flex;gap:10px;align-items:center;margin-top:20px">
+            <button class="btn btn-primary" onclick="saveKeywords()" style="background:var(--brand);color:#fff;padding:8px 24px;font-size:14px">
+              <i class="ti ti-device-floppy"></i> 儲存關鍵字
+            </button>
+            <button class="btn" onclick="loadKeywords()" style="padding:8px 16px">
+              <i class="ti ti-refresh"></i> 重新載入
+            </button>
+            <span id="kw-save-msg" style="font-size:12px;color:var(--brand);display:none">✓ 已儲存，2 分鐘內生效</span>
+          </div>
+        </div>
+
+        <!-- 說明卡 -->
+        <div class="card">
+          <div class="card-head"><span class="card-title"><i class="ti ti-info-circle"></i> 運作方式說明</span></div>
+          <div style="font-size:13px;color:var(--ink-2);line-height:1.9">
+            <div style="margin-bottom:8px">📨 使用者傳訊息給機器人後，系統依序執行：</div>
+            <div style="background:var(--bg-2);border-radius:var(--radius);padding:14px;font-family:monospace;font-size:12px;line-height:2">
+              1. 比對「課程/會議/招商/培訓」關鍵字 → 命中 → 直接查 DB 回覆（<span style="color:var(--brand)">不過 AI</span>）<br>
+              2. 比對「公告」關鍵字 → 命中 → 直接查 DB 回覆（<span style="color:var(--brand)">不過 AI</span>）<br>
+              3. 都沒命中 → 進 Gemini AI，AI 拿到完整資料庫背景 + <span style="color:var(--blue)">意圖標籤</span> → 回覆
+            </div>
+            <div style="margin-top:12px;color:var(--ink-3)">意圖標籤讓 AI 知道「這題要查課程」還是「這題是閒聊」，避免 AI 引用不該引用的資料或漏列資料。</div>
+          </div>
+        </div>
+      </div>
+
       <!-- 人設設定 -->
       <div id="panel-persona" class="panel">
         <div class="card">
@@ -1404,7 +1487,7 @@ function logout(){
 }
 
 // ── Navigation ──
-const titles = {dashboard:'總覽',courses:'課程管理',broadcast:'立即公告',scheduled:'排程廣播',groups:'群組管理',categories:'分類管理',quickreply:'快速回覆',persona:'人設設定',wander:'羊駝發呆',tired:'疲累模式',chatlogs:'對話紀錄',chatstats:'熱門問題',settings:'設定'};
+const titles = {dashboard:'總覽',courses:'課程管理',broadcast:'立即公告',scheduled:'排程廣播',groups:'群組管理',categories:'分類管理',quickreply:'快速回覆',keywords:'關鍵字設定',persona:'人設設定',wander:'羊駝發呆',tired:'疲累模式',chatlogs:'對話紀錄',chatstats:'熱門問題',settings:'設定'};
 function go(id, btn){
   document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
@@ -1420,6 +1503,7 @@ function go(id, btn){
   if(id==='categories') loadCategories();
   if(id==='settings') loadSettings();
   if(id==='quickreply') loadQrButtons();
+  if(id==='keywords') loadKeywords();
   if(id==='persona') loadPersona();
   if(id==='wander') loadWander();
   if(id==='tired') loadTired();
@@ -3172,6 +3256,35 @@ async function toggleQrActive(id, newActive){
 document.getElementById('qr-modal').addEventListener('click', function(e){
   if(e.target===this) closeQrModal();
 });
+
+// ── 關鍵字設定 ──
+async function loadKeywords(){
+  const res = await api('/admin/keywords');
+  const fields = ['kw_course','kw_broadcast','kw_meeting','kw_recruitment','kw_training'];
+  fields.forEach(key => {
+    const el = document.getElementById('kw-' + key);
+    if(el) el.value = (res[key] || '').replace(/,/g, ', ');
+  });
+  document.getElementById('kw-save-msg').style.display = 'none';
+}
+
+async function saveKeywords(){
+  const fields = ['kw_course','kw_broadcast','kw_meeting','kw_recruitment','kw_training'];
+  const payload = {};
+  fields.forEach(key => {
+    const el = document.getElementById('kw-' + key);
+    if(el) payload[key] = el.value;
+  });
+  const res = await api('/admin/keywords', 'POST', payload);
+  if(res.ok){
+    const msg = document.getElementById('kw-save-msg');
+    msg.style.display = 'inline';
+    setTimeout(()=>{ msg.style.display='none'; }, 6000);
+    toast('關鍵字已儲存，2 分鐘內生效', 'ok');
+  } else {
+    toast(res.error || '儲存失敗', 'err');
+  }
+}
 
 // ── 人設設定 ──
 async function loadPersona(){
