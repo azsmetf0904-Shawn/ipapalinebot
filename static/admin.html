@@ -1734,6 +1734,9 @@ async function aiParseMulti(){
       loadCourses();
     } else {
       toast(r.error || '解析失敗', 'err');
+      // 顯示詳細錯誤在結果區
+      resultDiv.innerHTML = `<div style="color:#C62828;font-size:12px;padding:8px;word-break:break-all">❌ ${esc(r.error||'未知錯誤')}</div>`;
+      resultDiv.style.display = 'block';
     }
   } catch(e){ toast('網路錯誤：'+e.message,'err'); }
 
