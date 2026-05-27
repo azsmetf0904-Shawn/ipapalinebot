@@ -1,4 +1,9 @@
 import os, json, hashlib, hmac, base64, logging, requests
+import re
+import time
+import random
+import threading
+from collections import Counter
 from zoneinfo import ZoneInfo
 from datetime import datetime, date, timedelta
 from flask import Flask, request, abort, jsonify, send_from_directory
@@ -42,18 +47,30 @@ GEMINI_API_KEYS = [k for k in [
 ] if k.strip()]
 
 # ── 冷卻機制（in-memory，重啟清空）──
-import time as _time_module
+# 注意：單 worker 多執行緒安全（已加鎖）；若改成多 worker 需改用 Redis 等共享快取
 _cooldown_cache: dict = {}   # { user_id: last_trigger_timestamp }
+_cooldown_lock = threading.Lock()
 COOLDOWN_SECONDS = 30        # 同一用戶 30 秒內只能觸發一次
 
 def check_cooldown(user_id: str) -> bool:
-    """回傳 True 代表冷卻中（應拒絕），False 代表可以回覆"""
-    now_ts = _time_module.time()
-    last = _cooldown_cache.get(user_id, 0)
-    if now_ts - last < COOLDOWN_SECONDS:
-        return True
-    _cooldown_cache[user_id] = now_ts
+    """回傳 True 代表冷卻中（應拒絕），False 代表可以回覆。執行緒安全。"""
+    now_ts = time.time()
+    with _cooldown_lock:
+        last = _cooldown_cache.get(user_id, 0)
+        if now_ts - last < COOLDOWN_SECONDS:
+            return True
+        _cooldown_cache[user_id] = now_ts
     return False
+
+def cleanup_cooldown_cache():
+    """清理超過 1 小時的冷卻快取，防止記憶體持續增長"""
+    now_ts = time.time()
+    with _cooldown_lock:
+        expired = [uid for uid, ts in _cooldown_cache.items() if now_ts - ts > 3600]
+        for uid in expired:
+            del _cooldown_cache[uid]
+    if expired:
+        logger.info(f"[Cooldown] 清理過期 {len(expired)} 筆")
 
 # ── 多機器人設定 ──
 # 每個 Bot 用環境變數 BOT_<KEY>_TOKEN / BOT_<KEY>_SECRET / BOT_<KEY>_NAME / BOT_<KEY>_GROUPS 設定
@@ -98,10 +115,18 @@ HEADERS = get_bot_headers(next(iter(BOTS), "main")) if BOTS else {
     "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
 }
 
+# ── 關鍵字常數（模組頂層，避免每次請求重建）──
+COURSE_KEYWORDS     = ["課程", "有什麼課", "近期", "行程", "下週", "這週",
+                        "本週", "今天", "明天", "最近", "課表", "安排", "幾號", "什麼時候",
+                        "會議", "線上", "小組", "上課", "培訓", "工作坊", "典禮"]
+BROADCAST_KEYWORDS  = ["公告", "最新消息", "有什麼消息", "廣播", "通知"]
+MEETING_KEYWORDS    = ["會議", "線上會議", "開會", "會前會"]
+RECRUITMENT_KEYWORDS = ["招商", "說明會", "招商說明"]
+TRAINING_KEYWORDS   = ["內訓", "教練", "系統人員", "培訓", "工作坊"]
+
 def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image/jpeg",
                image_url: str = "", max_tokens: int = 800, _retry: int = 3) -> str:
     """呼叫 Gemini API，遇到 429 自動輪換備援 key 並重試。"""
-    import time
     parts = []
     if image_b64:
         parts.append({"inline_data": {"mime_type": image_media_type, "data": image_b64}})
@@ -367,12 +392,15 @@ def save_chat_memory(user_id: str, group_id: str, user_msg: str, assistant_msg: 
     """儲存一輪對話，並自動清理超過 3 輪的舊記憶"""
     try:
         conn = get_db(); cur = conn.cursor()
-        now = isonow()
+        now = now_tw()
+        # assistant 時間戳比 user 晚 1 秒，確保 ORDER BY created_at DESC 排序穩定
+        now_user = now.isoformat()
+        now_asst = (now + timedelta(seconds=1)).isoformat()
         cur.execute("""
             INSERT INTO chat_memory (user_id, group_id, role, content, created_at)
             VALUES (%s,%s,'user',%s,%s), (%s,%s,'assistant',%s,%s)
-        """, (user_id, group_id, user_msg, now,
-              user_id, group_id, assistant_msg, now))
+        """, (user_id, group_id, user_msg, now_user,
+              user_id, group_id, assistant_msg, now_asst))
         cur.execute("""
             DELETE FROM chat_memory
             WHERE user_id = %s AND group_id = %s
@@ -469,6 +497,82 @@ def reply_message(reply_token: str, text: str, bot_key: str = ""):
     headers = get_bot_headers(bot_key) if bot_key else HEADERS
     requests.post("https://api.line.me/v2/bot/message/reply", headers=headers,
         json={"replyToken": reply_token, "messages": [{"type": "text", "text": text}]}, timeout=10)
+
+def reply_with_quick_reply(reply_token: str, text: str, options: list, bot_key: str = ""):
+    """回覆文字訊息＋底部 Quick Reply 泡泡（message action）。
+    options: 最多 13 個字串，每個字串同時作為 label 和送出的文字。
+    """
+    headers = get_bot_headers(bot_key) if bot_key else HEADERS
+    items = [
+        {
+            "type": "action",
+            "action": {
+                "type": "message",
+                "label": opt[:20],
+                "text":  opt[:300],
+            }
+        }
+        for opt in options[:13]
+    ]
+    requests.post("https://api.line.me/v2/bot/message/reply", headers=headers,
+        json={
+            "replyToken": reply_token,
+            "messages": [{
+                "type": "text",
+                "text": text,
+                "quickReply": {"items": items}
+            }]
+        }, timeout=10)
+
+# Postback Quick Reply 選單定義（data 為後端識別碼，label 為顯示文字）
+POSTBACK_MENU_ITEMS = [
+    {"data": "pb_recent_courses",  "label": "近期課程"},
+    {"data": "pb_meeting",         "label": "會議"},
+    {"data": "pb_recruitment",     "label": "招商說明會"},
+    {"data": "pb_training",        "label": "內訓 教練"},
+    {"data": "pb_announcement",    "label": "最新公告"},
+]
+
+def _make_postback_qr_items() -> list:
+    """產生 postback action 的 Quick Reply items（點下去不在聊天室顯示文字）"""
+    return [
+        {
+            "type": "action",
+            "action": {
+                "type": "postback",
+                "label": item["label"],
+                "data":  item["data"],
+                "displayText": f"查詢：{item['label']}",  # 使用者端顯示（不發送給 bot）
+            }
+        }
+        for item in POSTBACK_MENU_ITEMS
+    ]
+
+def reply_with_postback_menu(reply_token: str, text: str, bot_key: str = ""):
+    """回覆文字訊息＋postback Quick Reply 選單（按下後不在群組顯示原始文字）"""
+    headers = get_bot_headers(bot_key) if bot_key else HEADERS
+    requests.post("https://api.line.me/v2/bot/message/reply", headers=headers,
+        json={
+            "replyToken": reply_token,
+            "messages": [{
+                "type": "text",
+                "text": text,
+                "quickReply": {"items": _make_postback_qr_items()}
+            }]
+        }, timeout=10)
+
+def push_with_postback_menu(to: str, text: str, bot_key: str = ""):
+    """Push 文字訊息＋postback Quick Reply 選單（用於 join 等無 replyToken 場合）"""
+    headers = get_bot_headers(bot_key) if bot_key else HEADERS
+    requests.post("https://api.line.me/v2/bot/message/push", headers=headers,
+        json={
+            "to": to,
+            "messages": [{
+                "type": "text",
+                "text": text,
+                "quickReply": {"items": _make_postback_qr_items()}
+            }]
+        }, timeout=10)
 
 def upload_image_to_imgbb(image_data: bytes, filename="image.jpg") -> tuple[str | None, str | None]:
     if not IMGBB_API_KEY:
@@ -591,11 +695,12 @@ def check_and_send_reminders():
                     UPDATE course_broadcast_cache
                     SET status='sent', sent_time=%s WHERE id=%s
                 """, (isonow(), row["id"]))
-                # 同步標記舊表（保持一致）
+                # 同步標記舊表（保持一致）；send_at 是 UTC-aware，轉台灣時區取日期才正確
+                tw_date = row["send_at"].astimezone(TZ).date().isoformat() if hasattr(row["send_at"], "astimezone") else str(row["send_at"])[:10]
                 cur.execute("""
                     UPDATE course_reminders SET sent=TRUE
                     WHERE course_id=%s AND remind_date=%s
-                """, (row["course_id"], row["send_at"].date().isoformat() if hasattr(row["send_at"],"date") else str(row["send_at"])[:10]))
+                """, (row["course_id"], tw_date))
                 logger.info(f"[Reminder] cache id={row['id']} sent {ok}/{total}")
             else:
                 cur.execute("""
@@ -803,7 +908,6 @@ WANDER_MESSAGES = [
 ALPACA_WANDER_ENABLED = True   # 全域總開關（可由環境變數控制）
 
 # ── 羊駝疲累模式 ──
-import threading
 _tired_lock = threading.Lock()
 _tired_state = {
     "enabled": False,       # 目前是否疲累中
@@ -822,7 +926,6 @@ TIRED_MESSAGES = [
 
 def is_tired_mode() -> bool:
     """判斷目前是否在疲累模式（時段 or 手動）"""
-    import random
     with _tired_lock:
         now = now_tw()
         today = now.date()
@@ -840,7 +943,6 @@ def is_tired_mode() -> bool:
         return _tired_state["enabled"]
 
 def get_tired_message() -> str:
-    import random
     return random.choice(TIRED_MESSAGES)
 
 # 排程：每天凌晨 00:00 重置非手動的疲累模式
@@ -852,12 +954,13 @@ def reset_tired_mode():
 
 scheduler.add_job(reset_tired_mode, "cron", hour=0, minute=0,
                   id="reset_tired", replace_existing=True)
+scheduler.add_job(cleanup_cooldown_cache, "interval", hours=1,
+                  id="cooldown_cleanup", replace_existing=True)
 
 def check_alpaca_wander():
     """每小時檢查一次，到時間就對啟用群組發送羊駝發呆訊息"""
     if not ALPACA_WANDER_ENABLED:
         return
-    import random
     now = now_tw()
     conn = get_db(); cur = conn.cursor()
     try:
@@ -874,7 +977,6 @@ def check_alpaca_wander():
             last = r["last_sent"]
             if last:
                 # 確保距離上次發送已超過 interval_days 天
-                from datetime import timedelta
                 if now - last < timedelta(days=r["interval_days"]):
                     continue
             # 發送羊駝發呆訊息
@@ -1047,12 +1149,10 @@ def api_chat_stats():
                  "不","也","都","就","要","會","嗯","喔","好","啊","哦","欸","怎","麼","嘿",
                  "咕嚕","咕","嗚","噗","請問","想","知道","謝謝","謝","對","沒","去","來"}
     conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT question FROM chat_logs ORDER BY created_at DESC")
+    cur.execute("SELECT question FROM chat_logs ORDER BY created_at DESC LIMIT 2000")
     rows = cur.fetchall()
     cur.close(); conn.close()
 
-    from collections import Counter
-    import re
     counter = Counter()
     for r in rows:
         # 切成 2～6 字的詞組統計
@@ -1825,9 +1925,8 @@ def ai_parse_multi_v2():
 
     # ── global_cmd 直接帶數字，不再讓 Gemini 二次解析 ──
     if global_cmd:
-        import re as _re2
-        _rv_m = _re2.search(r'提前(\d+)(天|週|月)', global_cmd)
-        _iv_m = _re2.search(r'每(\d+)(天|週)', global_cmd)
+        _rv_m = re.search(r'提前(\d+)(天|週|月)', global_cmd)
+        _iv_m = re.search(r'每(\d+)(天|週)', global_cmd)
         _unit_map = {"天":"days","週":"weeks","月":"months"}
         _default_rv  = int(_rv_m.group(1)) if _rv_m else 30
         _default_ru  = _unit_map.get(_rv_m.group(2), "days") if _rv_m else "days"
@@ -1862,13 +1961,12 @@ def ai_parse_multi_v2():
         f'請立刻輸出 JSON 陣列：'
     )
 
-    import re as _re
     try:
         ai_text = gemini_call(prompt, image_b64=image_b64,
                               image_media_type=image_media_type, max_tokens=3000)
         # 清除 markdown 與思考標籤殘留
-        ai_text = _re.sub(r'```[a-zA-Z]*\n?', '', ai_text).strip()
-        ai_text = _re.sub(r'<[^>]+>', '', ai_text).strip()  # 清除 XML 標籤
+        ai_text = re.sub(r'```[a-zA-Z]*\n?', '', ai_text).strip()
+        ai_text = re.sub(r'<[^>]+>', '', ai_text).strip()  # 清除 XML 標籤
         # 擷取第一個完整 JSON 陣列（忽略前後雜訊）
         start = ai_text.find("["); end = ai_text.rfind("]") + 1
         if start == -1 or end == 0:
@@ -2150,7 +2248,12 @@ def handle_text(event, bot_key: str = ""):
                         clean_text = (clean_text[:s] + clean_text[s + l:]).strip()
 
             if not clean_text:
-                reply_message(reply_token, "咕嚕～？", bot_key=bot_key)
+                # @羊駝 後面沒有文字 → 發 postback 選單讓使用者選
+                reply_with_postback_menu(
+                    reply_token,
+                    "咕嚕～？\n想查什麼呢～",
+                    bot_key=bot_key
+                )
                 return
 
             # ── 疲累模式：不呼叫 Gemini，只回短句 ──
@@ -2160,15 +2263,6 @@ def handle_text(event, bot_key: str = ""):
                 return
 
             # ── 關鍵字快捷回覆（不消耗 Gemini token）──
-            COURSE_KEYWORDS = ["課程", "有什麼課", "近期", "行程", "下週", "這週",
-                                "本週", "今天", "明天", "最近", "課表", "安排", "幾號", "什麼時候",
-                                "會議", "線上", "小組", "上課", "培訓", "工作坊", "典禮"]
-            BROADCAST_KEYWORDS = ["公告", "最新消息", "有什麼消息", "廣播", "通知"]
-            # 特定活動類型關鍵字 → 精確搜尋
-            MEETING_KEYWORDS   = ["會議", "線上會議", "開會", "會前會"]
-            RECRUITMENT_KEYWORDS = ["招商", "說明會", "招商說明"]
-            TRAINING_KEYWORDS  = ["內訓", "教練", "系統人員", "培訓", "工作坊"]
-
             is_course_query    = any(kw in clean_text for kw in COURSE_KEYWORDS)
             is_broadcast_query = any(kw in clean_text for kw in BROADCAST_KEYWORDS)
             # 精確活動類型（取聯集後做 ILIKE 過濾）
@@ -2213,8 +2307,7 @@ def handle_text(event, bot_key: str = ""):
                                 loc = f"\n   📍 {r['location']}" if r.get("location") else ""
                                 desc = r.get("description","")
                                 # 擷取描述中的連結（http 開頭）
-                                import re as _re_link
-                                links = _re_link.findall(r'https?://\S+', desc)
+                                links = re.findall(r'https?://\S+', desc)
                                 link_line = ""
                                 if links:
                                     link_line = "\n   🔗 " + "\n   🔗 ".join(links[:2])
@@ -2246,8 +2339,7 @@ def handle_text(event, bot_key: str = ""):
                                 cat = f"[{r['category']}] " if r.get("category") else ""
                                 loc = f"\n   📍 {r['location']}" if r.get("location") else ""
                                 desc = r.get("description","")
-                                import re as _re_link2
-                                links = _re_link2.findall(r'https?://\S+', desc)
+                                links = re.findall(r'https?://\S+', desc)
                                 link_line = ""
                                 if links:
                                     link_line = "\n   🔗 " + "\n   🔗 ".join(links[:2])
@@ -2290,7 +2382,8 @@ def handle_text(event, bot_key: str = ""):
                     _cur.close(); _conn.close()
 
                     shortcut_msg = "\n".join(reply_lines)
-                    reply_message(reply_token, shortcut_msg, bot_key=bot_key)
+                    # 查詢結果下方附 postback 延伸選單
+                    reply_with_postback_menu(reply_token, shortcut_msg, bot_key=bot_key)
                     # 快捷回覆也寫入 chat_logs
                     try:
                         _lconn = get_db(); _lcur = _lconn.cursor()
@@ -2325,7 +2418,7 @@ def handle_text(event, bot_key: str = ""):
                         WHERE c.course_date >= %s AND c.course_date <= %s
                         ORDER BY c.course_date ASC
                         LIMIT 20
-                    """, (today, (now + __import__('datetime').timedelta(days=60)).date().isoformat()))
+                    """, (today, (now + timedelta(days=60)).date().isoformat()))
                     course_rows = _cur.fetchall()
 
                     # 目前啟用中的排程廣播
@@ -2557,12 +2650,20 @@ def handle_join(event, bot_key: str = ""):
         "例如：「@羊駝 這週有什麼會議？」\n\n"
         "咕嘟～我是溫柔的羊駝，請大家輕聲問我、溫柔對待我 🙏"
     )
-    headers = get_bot_headers(bot_key) if bot_key else HEADERS
     try:
+        # 第一則：自我介紹；第二則：Postback Quick Reply（按下不在群組顯示文字，體驗更乾淨）
+        headers = get_bot_headers(bot_key) if bot_key else HEADERS
         requests.post(
             "https://api.line.me/v2/bot/message/push",
             headers=headers,
-            json={"to": gid, "messages": [{"type": "text", "text": intro}]},
+            json={"to": gid, "messages": [
+                {"type": "text", "text": intro},
+                {
+                    "type": "text",
+                    "text": "咕嚕～先來試試看？",
+                    "quickReply": {"items": _make_postback_qr_items()}
+                }
+            ]},
             timeout=10
         )
     except Exception as e:
@@ -2594,6 +2695,8 @@ def webhook():
         try:
             if t == "message" and event["message"]["type"] == "text":
                 handle_text(event, bot_key=bot_key)
+            elif t == "postback":
+                handle_postback(event, bot_key=bot_key)
             elif t == "join":
                 handle_join(event, bot_key=bot_key)
             elif t == "leave":
@@ -2601,6 +2704,155 @@ def webhook():
         except Exception as e:
             logger.error(f"Event handler error: {e}")
     return "OK"
+
+# ── Postback 事件處理（Quick Reply 按鈕觸發）──
+# data → (clean_text 給關鍵字邏輯用, log 用標籤)
+_POSTBACK_DATA_MAP = {
+    "pb_recent_courses": ("近期課程",  "近期課程"),
+    "pb_meeting":        ("會議",      "會議"),
+    "pb_recruitment":    ("招商說明會", "招商說明會"),
+    "pb_training":       ("內訓 教練", "內訓 教練"),
+    "pb_announcement":   ("公告",      "最新公告"),
+}
+
+def handle_postback(event, bot_key: str = ""):
+    """
+    處理 postback 事件（使用者點 Quick Reply 按鈕後觸發）。
+    直接對應到關鍵字查詢邏輯，回覆結果。
+    """
+    user_id     = event["source"].get("userId", "")
+    reply_token = event.get("replyToken", "")
+    data        = event.get("postback", {}).get("data", "")
+    gid         = event["source"].get("groupId", "")
+
+    if data not in _POSTBACK_DATA_MAP:
+        logger.info(f"[Postback] 未知 data={data!r}，略過")
+        return
+
+    clean_text, log_label = _POSTBACK_DATA_MAP[data]
+    logger.info(f"[Postback] user={user_id} data={data!r} → query={clean_text!r}")
+
+    # 冷卻機制
+    if check_cooldown(user_id):
+        logger.info(f"[Postback/Cooldown] user={user_id} 冷卻中，略過")
+        return
+
+    # 疲累模式
+    if is_tired_mode():
+        reply_message(reply_token, get_tired_message(), bot_key=bot_key)
+        return
+
+    # 直接走關鍵字查詢邏輯
+    try:
+        now   = now_tw()
+        today = now.date().isoformat()
+        _conn = get_db(); _cur = _conn.cursor()
+        reply_lines = []
+
+        is_course_query    = any(kw in clean_text for kw in COURSE_KEYWORDS)
+        is_broadcast_query = any(kw in clean_text for kw in BROADCAST_KEYWORDS)
+        _specific_types = []
+        if any(kw in clean_text for kw in MEETING_KEYWORDS):
+            _specific_types += ["會議", "線上", "會前會"]
+        if any(kw in clean_text for kw in RECRUITMENT_KEYWORDS):
+            _specific_types += ["招商", "說明會"]
+        if any(kw in clean_text for kw in TRAINING_KEYWORDS):
+            _specific_types += ["內訓", "教練", "培訓", "工作坊", "系統"]
+        is_specific_query = bool(_specific_types)
+
+        if is_specific_query:
+            like_clauses = " OR ".join(["c.title ILIKE %s OR c.description ILIKE %s"] * len(_specific_types))
+            like_params  = [p for kw in _specific_types for p in (f"%{kw}%", f"%{kw}%")]
+            _cur.execute(f"""
+                SELECT c.title, c.course_date::text, c.course_time,
+                       c.location, c.description, cat.name AS category
+                FROM courses c
+                LEFT JOIN categories cat ON c.category_id = cat.id
+                WHERE c.course_date >= %s AND ({like_clauses})
+                ORDER BY c.course_date ASC LIMIT 8
+            """, (today, *like_params))
+            rows = _cur.fetchall()
+            if rows:
+                type_label = "、".join(dict.fromkeys(_specific_types))
+                reply_lines.append(f"咕嚕咕嚕～\n幫你找了一下「{type_label[:20]}」相關活動\n")
+                for r in rows:
+                    cat  = f"[{r['category']}] " if r.get("category") else ""
+                    loc  = f"\n   📍 {r['location']}" if r.get("location") else ""
+                    desc = r.get("description", "")
+                    links = re.findall(r'https?://\S+', desc)
+                    link_line = ("\n   🔗 " + "\n   🔗 ".join(links[:2])) if links else (f"\n   💬 {desc.strip()[:80]}" if desc.strip() else "")
+                    reply_lines.append(f"📅 {r['course_date']} {r['course_time']} {cat}{r['title']}{loc}{link_line}")
+                reply_lines.append("\n咕嘟～有需要再問我")
+            else:
+                type_label = "、".join(dict.fromkeys(_specific_types))
+                reply_lines.append(f"咕嚕～\n找不到近期的「{type_label[:20]}」相關活動\n咕…")
+
+        if is_course_query and not is_specific_query:
+            _cur.execute("""
+                SELECT c.title, c.course_date::text, c.course_time,
+                       c.location, c.description, cat.name AS category
+                FROM courses c
+                LEFT JOIN categories cat ON c.category_id = cat.id
+                WHERE c.course_date >= %s
+                ORDER BY c.course_date ASC LIMIT 8
+            """, (today,))
+            rows = _cur.fetchall()
+            if rows:
+                reply_lines.append("咕嚕咕嚕～\n幫你整理一下近期的課\n")
+                for r in rows:
+                    cat  = f"[{r['category']}] " if r.get("category") else ""
+                    loc  = f"\n   📍 {r['location']}" if r.get("location") else ""
+                    desc = r.get("description", "")
+                    links = re.findall(r'https?://\S+', desc)
+                    link_line = ("\n   🔗 " + "\n   🔗 ".join(links[:2])) if links else ""
+                    reply_lines.append(f"📅 {r['course_date']} {r['course_time']} {cat}{r['title']}{loc}{link_line}")
+                reply_lines.append("\n咕嘟～記得去")
+            else:
+                reply_lines.append("咕嚕～\n最近好像沒有課\n咕…")
+
+        if is_broadcast_query:
+            _cur.execute("""
+                SELECT title, content, next_run FROM scheduled_broadcasts
+                WHERE active = TRUE ORDER BY next_run ASC LIMIT 5
+            """)
+            rows = _cur.fetchall()
+            if rows:
+                if reply_lines:
+                    reply_lines.append("")
+                reply_lines.append("嗚咕～\n最新公告整理一下\n")
+                for r in rows:
+                    next_run = str(r["next_run"])[:16] if r.get("next_run") else ""
+                    reply_lines.append(f"📢 {r['title']}")
+                    reply_lines.append(f"   {str(r['content'])[:60]}")
+                    if next_run:
+                        reply_lines.append(f"   🕐 {next_run}")
+                reply_lines.append("\n咕～")
+            elif not reply_lines:
+                reply_lines.append("咕嚕～\n目前沒有公告\n咕…")
+
+        if not reply_lines:
+            reply_lines.append("咕嚕～\n沒找到相關資料\n咕…")
+
+        _cur.close(); _conn.close()
+        msg = "\n".join(reply_lines)
+
+        # 回覆結果 + postback 選單
+        reply_with_postback_menu(reply_token, msg, bot_key=bot_key)
+
+        # 寫入 chat_logs
+        try:
+            _lconn = get_db(); _lcur = _lconn.cursor()
+            _lcur.execute("""
+                INSERT INTO chat_logs (group_id, group_name, user_id, question, answer, created_at)
+                VALUES (%s, (SELECT group_name FROM groups WHERE group_id=%s), %s, %s, %s, %s)
+            """, (gid, gid, user_id, f"[postback] {log_label}", msg, isonow()))
+            _lconn.commit(); _lcur.close(); _lconn.close()
+        except Exception as le:
+            logger.warning(f"[Postback/ChatLog] write failed: {le}")
+
+    except Exception as e:
+        logger.error(f"[Postback] handler error: {e}")
+        reply_message(reply_token, "咕嚕…\n查詢時出了點狀況\n稍後再試試\n咕…", bot_key=bot_key)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
