@@ -307,6 +307,18 @@ def init_db():
             last_sent    TIMESTAMPTZ,
             created_at   TIMESTAMPTZ NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS chat_logs (
+            id          SERIAL PRIMARY KEY,
+            group_id    TEXT NOT NULL,
+            group_name  TEXT DEFAULT '',
+            user_id     TEXT NOT NULL,
+            question    TEXT NOT NULL,
+            answer      TEXT NOT NULL,
+            created_at  TIMESTAMPTZ NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS chat_logs_group ON chat_logs (group_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS chat_logs_time  ON chat_logs (created_at DESC);
     """)
     # 預設分類
     for name, color in [("招商活動","#FF6B35"),("系統會議","#1A73E8"),("課程培訓","#06C755"),("其他","#9E9E9E")]:
@@ -786,6 +798,78 @@ def api_wander_init(group_id):
     """, (group_id, isonow()))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok": True})
+
+# ── 對話紀錄 API ──
+@app.route("/api/chat-logs", methods=["GET"])
+def api_chat_logs():
+    if not check_admin(request): return jsonify({"error":"Unauthorized"}), 401
+    group_id = request.args.get("group_id", "")
+    keyword  = request.args.get("keyword", "").strip()
+    page     = max(1, int(request.args.get("page", 1)))
+    per_page = 20
+    offset   = (page - 1) * per_page
+
+    conn = get_db(); cur = conn.cursor()
+    conditions = []
+    params = []
+    if group_id:
+        conditions.append("group_id = %s"); params.append(group_id)
+    if keyword:
+        conditions.append("(question ILIKE %s OR answer ILIKE %s)")
+        params += [f"%{keyword}%", f"%{keyword}%"]
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    cur.execute(f"SELECT COUNT(*) AS cnt FROM chat_logs {where}", params)
+    total = cur.fetchone()["cnt"]
+
+    cur.execute(f"""
+        SELECT id, group_id, group_name, user_id, question, answer,
+               created_at AT TIME ZONE 'Asia/Taipei' AS created_at
+        FROM chat_logs {where}
+        ORDER BY created_at DESC
+        LIMIT %s OFFSET %s
+    """, params + [per_page, offset])
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+
+    return jsonify({
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "logs": [{**dict(r), "created_at": str(r["created_at"])[:16]} for r in rows]
+    })
+
+# ── 熱門關鍵字統計 API ──
+@app.route("/api/chat-stats", methods=["GET"])
+def api_chat_stats():
+    if not check_admin(request): return jsonify({"error":"Unauthorized"}), 401
+    # 常見停用詞（不計入統計）
+    STOPWORDS = {"嗎","的","了","是","在","有","什麼","可以","嗎","我","你","他","她","這","那",
+                 "不","也","都","就","要","會","嗯","喔","好","啊","哦","欸","怎","麼","嘿",
+                 "咕嚕","咕","嗚","噗","請問","想","知道","謝謝","謝","對","沒","去","來"}
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT question FROM chat_logs ORDER BY created_at DESC")
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+
+    from collections import Counter
+    import re
+    counter = Counter()
+    for r in rows:
+        # 切成 2～6 字的詞組統計
+        q = re.sub(r'[^\u4e00-\u9fff\w]', ' ', r["question"])
+        words = q.split()
+        for w in words:
+            if len(w) >= 2 and w not in STOPWORDS:
+                counter[w] += 1
+        # 也統計連續中文字組合（2～4字）
+        cjk = re.findall(r'[\u4e00-\u9fff]{2,4}', r["question"])
+        for c in cjk:
+            if c not in STOPWORDS:
+                counter[c] += 1
+
+    top = [{"keyword": k, "count": v} for k, v in counter.most_common(30)]
+    return jsonify({"total_questions": len(rows), "keywords": top})
 
 def check_admin(req) -> bool:
     return req.headers.get("X-Admin-Pass") == ADMIN_PASSWORD
@@ -1870,9 +1954,20 @@ def handle_text(event, bot_key: str = ""):
                 msg1 = parts[0].strip()
                 msg2 = parts[1].strip() if len(parts) > 1 else ""
 
-                # ── 儲存這輪對話到記憶 ──
+                # ── 儲存這輪對話到記憶 & 完整紀錄 ──
                 assistant_record = msg1 + ("\n" + msg2 if msg2 else "")
+                gid = event["source"].get("groupId", "")
                 save_chat_memory(user_id, gid, clean_text, assistant_record)
+                # 寫入完整對話紀錄（不自動刪除）
+                try:
+                    _lconn = get_db(); _lcur = _lconn.cursor()
+                    _lcur.execute("""
+                        INSERT INTO chat_logs (group_id, group_name, user_id, question, answer, created_at)
+                        VALUES (%s, (SELECT group_name FROM groups WHERE group_id=%s), %s, %s, %s, %s)
+                    """, (gid, gid, user_id, clean_text, assistant_record, isonow()))
+                    _lconn.commit(); _lcur.close(); _lconn.close()
+                except Exception as le:
+                    logger.warning(f"[ChatLog] write failed: {le}")
 
             except Exception as e:
                 msg1 = "咕嚕…\n我剛才發呆太久了\n稍後再問我一次\n咕…"
