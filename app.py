@@ -1413,7 +1413,8 @@ def sync_one_group_name(gid):
 def handle_text(event, bot_key: str = ""):
     user_id = event["source"].get("userId","")
     reply_token = event["replyToken"]
-    text = event["message"]["text"].strip()
+    msg_obj = event["message"]
+    text = msg_obj["text"].strip()
 
     if event["source"]["type"] == "group":
         gid = event["source"]["groupId"]
@@ -1442,6 +1443,37 @@ def handle_text(event, bot_key: str = ""):
             conn.commit()
         finally:
             cur.close(); conn.close()
+
+        # ── 偵測群組成員 @mention 機器人 → AI 回覆 ──
+        mentionees = msg_obj.get("mention", {}).get("mentionees", [])
+        is_mentioned = any(m.get("type") == "user" and m.get("isSelf") for m in mentionees)
+
+        if is_mentioned:
+            # 將訊息中所有 @機器人 的片段移除，取得純問題文字
+            clean_text = text
+            # 由後往前刪除，避免 index 位移
+            for m in sorted(mentionees, key=lambda x: x.get("index", 0), reverse=True):
+                if m.get("isSelf"):
+                    s, l = m.get("index", 0), m.get("length", 0)
+                    clean_text = (clean_text[:s] + clean_text[s + l:]).strip()
+
+            if not clean_text:
+                reply_message(reply_token, "你好！有什麼我可以幫助你的嗎？😊", bot_key=bot_key)
+                return
+
+            logger.info(f"[AI Mention] user={user_id} question={clean_text[:50]!r}")
+            try:
+                today = today_tw().isoformat()
+                ai_reply = gemini_call(
+                    f"你是一個友善的群組助理，今天是 {today}（台灣時間）。\n"
+                    f"請用繁體中文，簡潔清楚地回答以下問題：\n\n{clean_text}",
+                    max_tokens=800
+                )
+            except Exception as e:
+                ai_reply = f"❌ AI 暫時無法回覆，請稍後再試。\n（{str(e)[:60]}）"
+
+            reply_message(reply_token, ai_reply, bot_key=bot_key)
+            return  # mention 處理完畢，不再走 Admin 指令邏輯
 
     if user_id not in ADMIN_USER_IDS:
         return
