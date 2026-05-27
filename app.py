@@ -455,7 +455,22 @@ def init_db():
     conn.close()
     logger.info("DB initialized (PostgreSQL)")
 
-init_db()
+def _startup_init_db(max_retries: int = 5, delay: int = 3):
+    """帶重試的 DB 初始化，適合 Railway cold start。
+    Railway 有時 DB 比 app 晚幾秒啟動，裸呼叫 init_db() 會讓 gunicorn 直接 crash。
+    """
+    for attempt in range(1, max_retries + 1):
+        try:
+            init_db()
+            logger.info(f"[Startup] init_db OK (attempt {attempt})")
+            return
+        except Exception as e:
+            logger.warning(f"[Startup] init_db attempt {attempt}/{max_retries} failed: {e}")
+            if attempt < max_retries:
+                time.sleep(delay)
+    logger.error("[Startup] init_db failed after all retries, app may be unstable")
+
+_startup_init_db()
 
 # ── 對話記憶函式 ──
 def get_chat_memory(user_id: str, group_id: str, limit: int = 3) -> list[dict]:
@@ -2849,9 +2864,9 @@ def handle_leave(event):
     else:
         return
     conn = get_db(); cur = conn.cursor()
-    cur.execute("DELETE FROM groups WHERE group_id=%s", (gid,))
+    cur.execute("UPDATE groups SET active=FALSE WHERE group_id=%s", (gid,))  # 軟刪除，保留歷史記錄
     conn.commit(); cur.close(); conn.close()
-    logger.info(f"Chat left: {gid}")
+    logger.info(f"Chat left: {gid} → active=FALSE")
 
 # ── Quick Reply 按鈕管理 API ──
 
