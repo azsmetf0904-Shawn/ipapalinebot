@@ -297,6 +297,16 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS chat_memory_lookup
             ON chat_memory (user_id, group_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS alpaca_wander (
+            id           SERIAL PRIMARY KEY,
+            group_id     TEXT NOT NULL UNIQUE,
+            enabled      BOOLEAN DEFAULT FALSE,
+            send_hour    INTEGER DEFAULT 14,   -- 幾點發（台灣時間）
+            interval_days INTEGER DEFAULT 7,   -- 每幾天發一次
+            last_sent    TIMESTAMPTZ,
+            created_at   TIMESTAMPTZ NOT NULL
+        );
     """)
     # 預設分類
     for name, color in [("招商活動","#FF6B35"),("系統會議","#1A73E8"),("課程培訓","#06C755"),("其他","#9E9E9E")]:
@@ -659,6 +669,123 @@ def check_broadcast_schedule_entries():
 
 scheduler.add_job(check_broadcast_schedule_entries, "interval", minutes=5,
                   id="bcast_entries", replace_existing=True)
+
+# ── 羊駝發呆訊息排程 ──
+WANDER_MESSAGES = [
+    "咕嚕…今天有點安靜\n大家都在忙嗎",
+    "咕…不知道大家在幹嘛\n咕嚕嚕～",
+    "咕哇～\n剛才發呆了一下\n咕…",
+    "嗚咕…\n突然想到\n大家吃飯了嗎",
+    "咕嚕咕嚕～\n今天過得怎麼樣\n咕～",
+    "咕…\n我在這裡喔\n只是有點發呆",
+    "噗咕～\n外面天氣怎樣\n咕嚕…",
+    "咕嘟～\n剛剛在想事情\n忘記想什麼了",
+]
+
+ALPACA_WANDER_ENABLED = True   # 全域總開關（可由環境變數控制）
+
+def check_alpaca_wander():
+    """每小時檢查一次，到時間就對啟用群組發送羊駝發呆訊息"""
+    if not ALPACA_WANDER_ENABLED:
+        return
+    import random
+    now = now_tw()
+    conn = get_db(); cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT aw.group_id, aw.send_hour, aw.interval_days, aw.last_sent, g.bot_key
+            FROM alpaca_wander aw
+            LEFT JOIN groups g ON g.group_id = aw.group_id
+            WHERE aw.enabled = TRUE
+        """)
+        rows = cur.fetchall()
+        for r in rows:
+            if now.hour != r["send_hour"]:
+                continue
+            last = r["last_sent"]
+            if last:
+                # 確保距離上次發送已超過 interval_days 天
+                from datetime import timedelta
+                if now - last < timedelta(days=r["interval_days"]):
+                    continue
+            # 發送羊駝發呆訊息
+            msg = random.choice(WANDER_MESSAGES)
+            bot_key = r["bot_key"] or ""
+            headers = get_bot_headers(bot_key) if bot_key else HEADERS
+            try:
+                requests.post(
+                    "https://api.line.me/v2/bot/message/push",
+                    headers=headers,
+                    json={"to": r["group_id"], "messages": [{"type": "text", "text": msg}]},
+                    timeout=10
+                )
+                cur.execute("UPDATE alpaca_wander SET last_sent=%s WHERE group_id=%s",
+                            (now, r["group_id"]))
+                conn.commit()
+                logger.info(f"[Wander] 發送到 {r['group_id']}: {msg[:20]!r}")
+            except Exception as e:
+                logger.warning(f"[Wander] push failed {r['group_id']}: {e}")
+    finally:
+        cur.close(); conn.close()
+
+scheduler.add_job(check_alpaca_wander, "interval", minutes=60,
+                  id="alpaca_wander", replace_existing=True)
+
+# ── 羊駝發呆 API ──
+@app.route("/api/wander", methods=["GET"])
+def api_wander_list():
+    if not check_admin(request): return jsonify({"error":"Unauthorized"}), 401
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("""
+        SELECT aw.group_id, aw.enabled, aw.send_hour, aw.interval_days, aw.last_sent,
+               g.group_name
+        FROM alpaca_wander aw
+        LEFT JOIN groups g ON g.group_id = aw.group_id
+        ORDER BY g.group_name
+    """)
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+    return jsonify({
+        "global_enabled": ALPACA_WANDER_ENABLED,
+        "groups": [dict(r) for r in rows]
+    })
+
+@app.route("/api/wander/global", methods=["POST"])
+def api_wander_global():
+    global ALPACA_WANDER_ENABLED
+    if not check_admin(request): return jsonify({"error":"Unauthorized"}), 401
+    data = request.json or {}
+    ALPACA_WANDER_ENABLED = bool(data.get("enabled", True))
+    return jsonify({"ok": True, "global_enabled": ALPACA_WANDER_ENABLED})
+
+@app.route("/api/wander/<group_id>", methods=["POST"])
+def api_wander_group(group_id):
+    if not check_admin(request): return jsonify({"error":"Unauthorized"}), 401
+    data = request.json or {}
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO alpaca_wander (group_id, enabled, send_hour, interval_days, created_at)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (group_id) DO UPDATE
+        SET enabled=%s, send_hour=%s, interval_days=%s
+    """, (group_id, data.get("enabled", False),
+          data.get("send_hour", 14), data.get("interval_days", 7), isonow(),
+          data.get("enabled", False), data.get("send_hour", 14), data.get("interval_days", 7)))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True})
+
+@app.route("/api/wander/<group_id>/init", methods=["POST"])
+def api_wander_init(group_id):
+    """將群組加入發呆排程（預設關閉）"""
+    if not check_admin(request): return jsonify({"error":"Unauthorized"}), 401
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO alpaca_wander (group_id, enabled, send_hour, interval_days, created_at)
+        VALUES (%s, FALSE, 14, 7, %s)
+        ON CONFLICT (group_id) DO NOTHING
+    """, (group_id, isonow()))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True})
 
 def check_admin(req) -> bool:
     return req.headers.get("X-Admin-Pass") == ADMIN_PASSWORD
@@ -1523,6 +1650,12 @@ def handle_text(event, bot_key: str = ""):
                     VALUES (%s, %s, %s, %s)
                     ON CONFLICT (group_id) DO UPDATE SET group_name = EXCLUDED.group_name, bot_key = EXCLUDED.bot_key
                 """, (gid, isonow(), group_name, bot_key))
+                # 自動為新群組建立發呆排程設定（預設關閉）
+                cur.execute("""
+                    INSERT INTO alpaca_wander (group_id, enabled, send_hour, interval_days, created_at)
+                    VALUES (%s, FALSE, 14, 7, %s)
+                    ON CONFLICT (group_id) DO NOTHING
+                """, (gid, isonow()))
             elif not row["group_name"]:
                 group_name = fetch_group_name(gid, bot_key)
                 cur.execute("UPDATE groups SET group_name=%s WHERE group_id=%s", (group_name, gid))
