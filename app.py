@@ -125,7 +125,8 @@ RECRUITMENT_KEYWORDS = ["招商", "說明會", "招商說明"]
 TRAINING_KEYWORDS   = ["內訓", "教練", "系統人員", "培訓", "工作坊"]
 
 def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image/jpeg",
-               image_url: str = "", max_tokens: int = 800, _retry: int = 3) -> str:
+               image_url: str = "", max_tokens: int = 800, _retry: int = 3,
+               temperature: float = 0.7) -> str:
     """呼叫 Gemini API，遇到 429 自動輪換備援 key 並重試。"""
     parts = []
     if image_b64:
@@ -141,7 +142,7 @@ def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image
         "contents": [{"parts": parts}],
         "generationConfig": {
             "maxOutputTokens": max_tokens,
-            "temperature": 0.7,
+            "temperature": temperature,
         }
     }
 
@@ -2471,7 +2472,10 @@ def handle_text(event, bot_key: str = ""):
 
                 db_context = "\n\n".join(context_parts)
                 if db_context:
-                    db_context = f"\n\n[你擁有以下背景資料，請優先根據這些資料回答，若問題與資料無關則正常回答]\n{db_context}\n"
+                    db_context = (
+                        f"\n\n[⚠️ 以下是系統資料庫的真實資料，回答資料相關問題時【必須】優先根據這些資料，"
+                        f"不可捏造或猜測不在清單中的活動]\n{db_context}\n"
+                    )
 
                 # 判斷目前是餓感模式還是開朗模式
                 is_hungry_mode = (
@@ -2486,37 +2490,68 @@ def handle_text(event, bot_key: str = ""):
                     "語助詞：咕嚕咕嚕～/咕哇～/咕嘟～/咕～/噗咕～，不提餓，保持開朗輕鬆"
                 )
 
-                IPAPA_PERSONA = f"""你是IPAPA羊駝提醒機器人。你本身就是那隻羊駝，不要把自己當成食物或第三者。一隻生活在系統裡的羊駝，提醒行程、用羊駝方式陪伴。不教學、不銷售、不說成功學。
+                # ── 判斷問題類型（決定回覆策略）──
+                is_data_query = bool(db_context) and any(kw in clean_text for kw in
+                    ["什麼", "幾號", "幾點", "哪裡", "在哪", "時間", "日期", "地點",
+                     "有什麼", "有沒有", "今天", "明天", "這週", "下週", "本週",
+                     "近期", "最近", "課程", "會議", "招商", "內訓", "公告", "活動"])
 
-格式：輸出兩段，中間用 ---SPLIT--- 分隔。
-第一段：主回覆（開頭羊駝語助詞＋主體1~2句＋收尾）
-第二段：延伸一句（反問或發呆聯想，不重複第一段）
+                if is_data_query:
+                    # 資料查詢型：精確優先，不要發揮，直接列出資料
+                    format_instruction = """格式：輸出兩段，中間用 ---SPLIT--- 分隔。
+第一段：用羊駝語助詞開頭，然後【完整列出所有相關資料】，每筆一行，格式為「📅 日期 時間 標題 / 地點」，結尾加一句咕嚕收尾。若有連結請保留在對應活動後面。若資料中找不到相關內容，直接說找不到，不要捏造。
+第二段：一句輕鬆的補充或追問（不重複第一段資料）。
+
+⚠️ 重要：第一段必須把背景資料中符合問題的項目【全部列出】，不可省略、不可只說「有幾個活動」而不列出來。"""
+                    temperature_val = 0.3  # 資料查詢低溫度，避免捏造
+                    max_tok = 600  # 給足 tokens 列資料
+                else:
+                    # 閒聊 / 情境型：自然對話，有個性
+                    format_instruction = """格式：輸出兩段，中間用 ---SPLIT--- 分隔。
+第一段：主回覆（開頭羊駝語助詞＋主體1~2句＋收尾），輕鬆有個性。
+第二段：延伸一句（反問或發呆聯想，不重複第一段）。"""
+                    temperature_val = 0.75
+                    max_tok = 400
+
+                IPAPA_PERSONA = f"""你是IPAPA羊駝提醒機器人。你本身就是那隻羊駝，不是第三者。你生活在系統裡，負責提醒行程、陪伴群組成員。不教學、不銷售、不說成功學。
+
+{format_instruction}
 
 {"🍞餓感模式：" + mode_instruction if is_hungry_mode else "🌤開朗模式：" + mode_instruction}
 
-範例：
+資料查詢範例（is_data_query=True）：
 咕嚕咕嚕～
-今晚九點有會
-記得上線
-咕嘟～
+幫你整理一下近期的：
+📅 2025-06-01 09:00 系統說明會 / 台北總部
+📅 2025-06-08 14:00 招商說明會 / 線上 https://meet.example.com
+📅 2025-06-15 10:00 內訓 教練培訓 / 台中
+咕嘟～有需要再問我
+---SPLIT---
+咕…下週的那場要記得報名哦
+
+閒聊範例（is_data_query=False）：
+咕嚕咕嚕～
+我在這裡喔
+咕～
 ---SPLIT---
 咕…你今天吃飯了嗎
 
 用繁體中文，短句，有節奏感。"""
 
                 # ── 讀取此用戶在此群組的對話記憶 ──
-                memory = get_chat_memory(user_id, gid, limit=3)
+                memory = get_chat_memory(user_id, gid, limit=4)
                 memory_text = ""
                 if memory:
-                    lines = ["[這位用戶最近的對話記憶]"]
+                    lines = ["[這位用戶最近的對話記憶，可參考但不強制延續]"]
                     for m in memory:
                         role_label = "用戶" if m["role"] == "user" else "羊駝"
-                        lines.append(f"{role_label}：{m['content']}")
+                        lines.append(f"{role_label}：{m['content'][:120]}")  # 限制單則長度
                     memory_text = "\n" + "\n".join(lines) + "\n"
 
                 raw = gemini_call(
                     f"{IPAPA_PERSONA}{db_context}{memory_text}\n現在：{today} {now.strftime('%H:%M')}（台灣時間）\n使用者問：{clean_text}",
-                    max_tokens=300
+                    max_tokens=max_tok,
+                    temperature=temperature_val,
                 )
 
                 # 切分兩段訊息
