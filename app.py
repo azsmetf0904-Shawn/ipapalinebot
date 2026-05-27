@@ -874,7 +874,6 @@ def check_alpaca_wander():
             last = r["last_sent"]
             if last:
                 # 確保距離上次發送已超過 interval_days 天
-                from datetime import timedelta
                 if now - last < timedelta(days=r["interval_days"]):
                     continue
             # 發送羊駝發呆訊息
@@ -2210,7 +2209,7 @@ def handle_text(event, bot_key: str = ""):
                         WHERE c.course_date >= %s AND c.course_date <= %s
                         ORDER BY c.course_date ASC
                         LIMIT 20
-                    """, (today, (now + __import__('datetime').timedelta(days=60)).date().isoformat()))
+                    """, (today, (now + timedelta(days=60)).date().isoformat()))
                     course_rows = _cur.fetchall()
 
                     # 目前啟用中的排程廣播
@@ -2264,6 +2263,7 @@ def handle_text(event, bot_key: str = ""):
                     if is_hungry_mode else
                     "語助詞：咕嚕咕嚕～/咕哇～/咕嘟～/咕～/噗咕～，不提餓，保持開朗輕鬆"
                 )
+                mode_label = f"🍞餓感模式：{mode_instruction}" if is_hungry_mode else f"🌤開朗模式：{mode_instruction}"
 
                 IPAPA_PERSONA = f"""你是IPAPA羊駝提醒機器人。你本身就是那隻羊駝，不要把自己當成食物或第三者。一隻生活在系統裡的羊駝，提醒行程、用羊駝方式陪伴。不教學、不銷售、不說成功學。
 
@@ -2271,7 +2271,7 @@ def handle_text(event, bot_key: str = ""):
 第一段：主回覆（開頭羊駝語助詞＋主體1~2句＋收尾）
 第二段：延伸一句（反問或發呆聯想，不重複第一段）
 
-{"🍞餓感模式：" + mode_instruction if is_hungry_mode else "🌤開朗模式：" + mode_instruction}
+{mode_label}
 
 範例：
 咕嚕咕嚕～
