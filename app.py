@@ -72,6 +72,57 @@ def cleanup_cooldown_cache():
     if expired:
         logger.info(f"[Cooldown] 清理過期 {len(expired)} 筆")
 
+# ── 人設快取（避免每次 Gemini 呼叫都查 DB）──
+_persona_cache: dict = {}   # { bot_key: {"data": {...}, "ts": float} }
+_persona_lock = threading.Lock()
+PERSONA_CACHE_TTL = 60  # 秒；後台存檔後最多 60 秒生效
+
+def get_persona(bot_key: str = "main") -> dict:
+    """從 DB 讀取人設，帶 TTL 快取。若找不到指定 bot_key 則 fallback 到 main。"""
+    now_ts = time.time()
+    with _persona_lock:
+        cached = _persona_cache.get(bot_key)
+        if cached and now_ts - cached["ts"] < PERSONA_CACHE_TTL:
+            return cached["data"]
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute(
+            "SELECT * FROM bot_persona WHERE bot_key=%s AND active=TRUE LIMIT 1",
+            (bot_key,)
+        )
+        row = cur.fetchone()
+        if not row and bot_key != "main":
+            cur.execute(
+                "SELECT * FROM bot_persona WHERE bot_key='main' AND active=TRUE LIMIT 1"
+            )
+            row = cur.fetchone()
+        cur.close(); conn.close()
+    except Exception as e:
+        logger.warning(f"[Persona] DB read error: {e}")
+        row = None
+
+    # 若 DB 完全沒資料，回傳內建預設值
+    data = dict(row) if row else {
+        "bot_key": bot_key,
+        "name": "麥可（Michael）",
+        "background": "你是一隻住在北投豪宅的明星羊駝，幫大家管行程、查課程、提醒會議。",
+        "personality": "懶散但可靠，不承認自己是機器人",
+        "restrictions": "不教學、不銷售",
+        "greeting_words": "咕嚕,咕嘟,噗咕",
+        "extra_notes": "",
+    }
+    with _persona_lock:
+        _persona_cache[bot_key] = {"data": data, "ts": now_ts}
+    return data
+
+def invalidate_persona_cache(bot_key: str = ""):
+    """後台存檔後呼叫，清除快取讓下次立即重讀 DB。"""
+    with _persona_lock:
+        if bot_key:
+            _persona_cache.pop(bot_key, None)
+        else:
+            _persona_cache.clear()
+
 # ── 多機器人設定 ──
 # 每個 Bot 用環境變數 BOT_<KEY>_TOKEN / BOT_<KEY>_SECRET / BOT_<KEY>_NAME / BOT_<KEY>_GROUPS 設定
 # BOT_<KEY>_GROUPS 為逗號分隔的群組 ID（選填；也可在後台動態綁定）
@@ -431,6 +482,20 @@ def init_db():
             active     BOOLEAN NOT NULL DEFAULT TRUE,
             created_at TIMESTAMPTZ NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS bot_persona (
+            id           SERIAL PRIMARY KEY,
+            bot_key      TEXT NOT NULL DEFAULT 'main',
+            name         TEXT NOT NULL DEFAULT '麥可（Michael）',
+            background   TEXT NOT NULL DEFAULT '',
+            personality  TEXT NOT NULL DEFAULT '',
+            restrictions TEXT NOT NULL DEFAULT '',
+            greeting_words TEXT NOT NULL DEFAULT '咕嚕,咕嘟,噗咕,咕哇,咕～',
+            extra_notes  TEXT NOT NULL DEFAULT '',
+            active       BOOLEAN NOT NULL DEFAULT TRUE,
+            updated_at   TIMESTAMPTZ NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS bot_persona_bot_key ON bot_persona (bot_key);
     """)
     # 預設分類
     for name, color in [("招商活動","#FF6B35"),("系統會議","#1A73E8"),("課程培訓","#06C755"),("其他","#9E9E9E")]:
@@ -450,6 +515,23 @@ def init_db():
                 "INSERT INTO quick_reply_buttons (label,btn_type,tags,sort_order,active,created_at) VALUES (%s,%s,%s,%s,TRUE,%s)",
                 (label, btn_type, tags, sort_order, isonow())
             )
+    # 預設人設（只在沒有資料時插入）
+    cur.execute("SELECT COUNT(*) AS cnt FROM bot_persona")
+    if cur.fetchone()["cnt"] == 0:
+        cur.execute("""
+            INSERT INTO bot_persona
+                (bot_key, name, background, personality, restrictions, greeting_words, extra_notes, active, updated_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,TRUE,%s)
+        """, (
+            "main",
+            "麥可（Michael）",
+            "你住在北投豪宅，是一隻明星羊駝。主人是王宥忻（財富女神）。你不只是寵物，你是家裡的明星。你坐過特斯拉、逛過夜市、出現在寵物友善餐廳，還接過代言與活動邀約。媒體說你「比主人還紅」，一年商業價值上千萬。你對這件事心知肚明，但不會主動說——只有在別人問起或剛好聊到才會不小心漏出來一句。\n現在你跑進了 IPAPA 這個系統裡，幫大家管行程、查課程、提醒會議。",
+            "懶散但可靠：平常愛發呆、說話慢吞吞，但真的被問到事情就認真給答案\n見過世面：拍廣告、上過媒體，不會被群組裡的事嚇到，有種淡定的「我見過更大的場面」感\n不承認自己是機器人：你就是羊駝麥可，不解釋、不道歉、不說「作為AI」\n偶爾會提到自己的生活：「我剛在吃草」「今天曬太陽曬太久了」「上次坐特斯拉也這樣」\n對群組成員有點黏：給完資料會加一句帶溫度的話，不冷冰冰結束",
+            "不教學、不銷售、不說成功學、不說「很高興為您服務」這類話",
+            "咕嚕,咕嘟,噗咕,咕哇,咕～,嗚咕",
+            "",
+            isonow()
+        ))
     conn.commit()
     cur.close()
     conn.close()
@@ -2634,21 +2716,30 @@ def handle_text(event, bot_key: str = ""):
                     temperature_val = 0.8
                     max_tok = 420
 
-                IPAPA_PERSONA = f"""你是麥可（Michael），一隻住在北投豪宅的明星羊駝。
+                # ── 從 DB 讀取人設（帶快取，後台改完 60 秒內生效）──
+                _p = get_persona(bot_key)
+                _name         = _p.get("name", "麥可（Michael）").strip()
+                _background   = _p.get("background", "").strip()
+                _personality  = _p.get("personality", "").strip()
+                _restrictions = _p.get("restrictions", "").strip()
+                _extra_notes  = _p.get("extra_notes", "").strip()
+                # 個性：每行加 "- " 前綴
+                _personality_lines = "\n".join(
+                    f"- {l.strip()}" for l in _personality.splitlines() if l.strip()
+                ) if _personality else "- 懶散但可靠，真的被問到事情就認真給答案"
+                _restrictions_block = _restrictions or "不教學、不銷售、不說成功學、不說「很高興為您服務」這類話"
+                _extra_block = f"\n【補充說明】\n{_extra_notes}" if _extra_notes else ""
+
+                IPAPA_PERSONA = f"""你是{_name}。
 
 【你的背景】
-你的主人是王宥忻（財富女神）。你不只是寵物，你是家裡的明星。你坐過特斯拉、逛過夜市、出現在寵物友善餐廳，還接過代言與活動邀約。媒體說你「比主人還紅」，一年商業價值上千萬。你對這件事心知肚明，但不會主動說——只有在別人問起或剛好聊到才會不小心漏出來一句。
-現在你跑進了 IPAPA 這個系統裡，幫大家管行程、查課程、提醒會議。
+{_background}
 
 【你的個性】
-- 懶散但可靠：平常愛發呆、說話慢吞吞，但真的被問到事情就認真給答案
-- 見過世面：拍廣告、上過媒體，不會被群組裡的事嚇到，有種淡定的「我見過更大的場面」感
-- 不承認自己是機器人：你就是羊駝麥可，不解釋、不道歉、不說「作為AI」
-- 偶爾會提到自己的生活：「我剛在吃草」「今天曬太陽曬太久了」「上次坐特斯拉也這樣」「逛夜市回來」
-- 對群組成員有點黏：給完資料會加一句帶溫度的話，不冷冰冰結束
+{_personality_lines}
 
 【你不做的事】
-不教學、不銷售、不說成功學、不說「很高興為您服務」這類話
+{_restrictions_block}{_extra_block}
 
 {format_instruction}
 
@@ -2671,7 +2762,7 @@ def handle_text(event, bot_key: str = ""):
 ---SPLIT---
 欸…你今天吃飯了嗎
 
-用繁體中文，短句，有節奏感，像一隻真實的羊駝在說話。"""
+用繁體中文，短句，有節奏感，像一隻真實的角色在說話。"""
 
                 # ── 讀取此用戶在此群組的對話記憶 ──
                 memory = get_chat_memory(user_id, gid, limit=4)
@@ -2867,6 +2958,55 @@ def handle_leave(event):
     cur.execute("UPDATE groups SET active=FALSE WHERE group_id=%s", (gid,))  # 軟刪除，保留歷史記錄
     conn.commit(); cur.close(); conn.close()
     logger.info(f"Chat left: {gid} → active=FALSE")
+
+# ── 人設管理 API ──
+
+@app.route("/admin/persona", methods=["GET"])
+def get_persona_api():
+    if not check_admin(request): return jsonify({"error": "unauthorized"}), 401
+    bot_key = request.args.get("bot_key", "main")
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT * FROM bot_persona WHERE bot_key=%s LIMIT 1", (bot_key,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if row:
+        return jsonify(dict(row))
+    # 回傳預設空白人設供前端顯示
+    return jsonify({
+        "bot_key": bot_key, "name": "", "background": "",
+        "personality": "", "restrictions": "", "greeting_words": "",
+        "extra_notes": "", "active": True
+    })
+
+@app.route("/admin/persona", methods=["POST"])
+def save_persona_api():
+    if not check_admin(request): return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json() or {}
+    bot_key      = data.get("bot_key", "main")
+    name         = data.get("name", "").strip()
+    background   = data.get("background", "").strip()
+    personality  = data.get("personality", "").strip()
+    restrictions = data.get("restrictions", "").strip()
+    greeting_words = data.get("greeting_words", "").strip()
+    extra_notes  = data.get("extra_notes", "").strip()
+    active       = bool(data.get("active", True))
+    if not name:
+        return jsonify({"error": "名稱不可為空"}), 400
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO bot_persona
+            (bot_key, name, background, personality, restrictions, greeting_words, extra_notes, active, updated_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (bot_key) DO UPDATE SET
+            name=EXCLUDED.name, background=EXCLUDED.background,
+            personality=EXCLUDED.personality, restrictions=EXCLUDED.restrictions,
+            greeting_words=EXCLUDED.greeting_words, extra_notes=EXCLUDED.extra_notes,
+            active=EXCLUDED.active, updated_at=EXCLUDED.updated_at
+    """, (bot_key, name, background, personality, restrictions, greeting_words, extra_notes, active, isonow()))
+    conn.commit(); cur.close(); conn.close()
+    invalidate_persona_cache(bot_key)   # 立即清快取
+    logger.info(f"[Persona] bot_key={bot_key} updated")
+    return jsonify({"ok": True})
 
 # ── Quick Reply 按鈕管理 API ──
 
