@@ -131,6 +131,14 @@ textarea{resize:vertical;min-height:72px}
 .bot-select label{font-size:12px;color:#0A7A3E;font-weight:500;white-space:nowrap}
 .bot-select select{flex:1;font-size:13px;border:1px solid #B2DFC4;border-radius:7px;padding:5px 9px;background:#fff;color:#1A1A1A;outline:none}
 .bot-select i{font-size:16px;color:#06A847}
+
+/* Bot multi-select checkboxes */
+.bot-check-list{display:flex;flex-wrap:wrap;gap:8px;padding:8px 0}
+.bot-check-item{display:flex;align-items:center;gap:6px;padding:5px 12px;border:1px solid #E0E0DC;border-radius:20px;cursor:pointer;font-size:12px;color:#555;transition:all .12s;user-select:none;background:#fff}
+.bot-check-item:hover{border-color:#B2DFC4;background:#F0FBF5;color:#0A7A3E}
+.bot-check-item.checked{border-color:#06C755;background:#E9FBF0;color:#0A7A3E;font-weight:500}
+.bot-check-item input[type=checkbox]{display:none}
+
 /* Scheduled announcement queue */
 .ann-queue-item{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:#FAFAF8;border:1px solid #E8E8E4;border-radius:8px;margin-bottom:8px}
 .ann-queue-time{font-size:12px;font-weight:600;color:#1A5CC4;white-space:nowrap;padding-top:1px;min-width:120px}
@@ -506,7 +514,10 @@ textarea{resize:vertical;min-height:72px}
             <button class="btn btn-sm" id="s-cancel-btn" onclick="clearSchedForm()" style="display:none">取消編輯</button>
           </div>
           <input type="hidden" id="edit-sched-id">
-          <div class="bot-select"><i class="ti ti-robot" aria-hidden="true"></i><label>使用機器人</label><select id="s-bot-key"><option value="">載入中...</option></select></div>
+          <div class="bot-select" style="align-items:flex-start;flex-direction:column;gap:6px">
+            <div style="display:flex;align-items:center;gap:8px"><i class="ti ti-robot" style="font-size:16px;color:#06A847"></i><label style="font-size:12px;color:#0A7A3E;font-weight:500">使用機器人 <span style="font-weight:400;color:#999">（可複選）</span></label></div>
+            <div class="bot-check-list" id="s-bot-check-list"><span style="font-size:12px;color:#999">載入中...</span></div>
+          </div>
           <div class="grid2">
             <div class="fg"><label>標題（內部識別）</label><input id="s-title" placeholder="例：每週業績提醒"></div>
             <div class="fg"><label>開始時間 *</label><input id="s-start" type="datetime-local"></div>
@@ -1132,10 +1143,41 @@ async function loadBots(){
   const opts = _bots.length
     ? _bots.map(b=>`<option value="${b.key}">${b.name}（${b.group_count} 群組）</option>`).join('')
     : '<option value="">（尚未設定機器人）</option>';
-  ['ann-bot-key','sann-bot-key','s-bot-key','c-bot-key'].forEach(id=>{
+  // 單選下拉（立即公告、排程公告、課程）
+  ['ann-bot-key','sann-bot-key','c-bot-key'].forEach(id=>{
     const el = document.getElementById(id);
     if(el) el.innerHTML = opts;
   });
+  // 排程廣播：勾選清單
+  renderBotCheckList('s-bot-check-list', []);
+}
+
+function renderBotCheckList(containerId, selectedKeys){
+  const el = document.getElementById(containerId);
+  if(!el) return;
+  if(!_bots.length){
+    el.innerHTML = '<span style="font-size:12px;color:#999">（尚未設定機器人）</span>';
+    return;
+  }
+  el.innerHTML = _bots.map(b=>{
+    const checked = selectedKeys.includes(b.key);
+    return `<label class="bot-check-item ${checked?'checked':''}" onclick="toggleBotCheck(this,'${b.key}','${containerId}')">
+      <input type="checkbox" value="${b.key}" ${checked?'checked':''}>
+      <i class="ti ti-robot" style="font-size:13px"></i> ${esc(b.name)}<span style="color:#999;font-size:11px;margin-left:2px">（${b.group_count}群）</span>
+    </label>`;
+  }).join('');
+}
+
+function toggleBotCheck(label, key, containerId){
+  const cb = label.querySelector('input');
+  cb.checked = !cb.checked;
+  label.classList.toggle('checked', cb.checked);
+}
+
+function getCheckedBotKeys(containerId){
+  const el = document.getElementById(containerId);
+  if(!el) return [];
+  return Array.from(el.querySelectorAll('input[type=checkbox]:checked')).map(cb=>cb.value);
 }
 
 // ── Dashboard ──
@@ -1941,7 +1983,7 @@ function clearSchedForm(){
   ['s-title','s-content','s-img','s-start','s-end'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('s-iv').value = '7';
   document.getElementById('s-iu').value = 'days';
-  document.getElementById('s-bot-key').value = '';
+  renderBotCheckList('s-bot-check-list', []);
 }
 
 function editSched(id){
@@ -1951,7 +1993,9 @@ function editSched(id){
   document.getElementById('s-title').value   = s.title || '';
   document.getElementById('s-content').value = s.content || '';
   document.getElementById('s-img').value     = s.image_url || '';
-  document.getElementById('s-bot-key').value = s.bot_key || '';
+  // 解析 bot_key（逗號分隔）並勾選
+  const selectedKeys = (s.bot_key||'').split(',').map(k=>k.trim()).filter(Boolean);
+  renderBotCheckList('s-bot-check-list', selectedKeys);
   // Convert interval_seconds back to value+unit
   const secs = s.interval_seconds || 0;
   let iv = secs, iu = 'days';
@@ -1992,7 +2036,7 @@ async function saveScheduled(){
   const body = {
     title, content,
     image_url:      document.getElementById('s-img').value.trim(),
-    bot_key:        document.getElementById('s-bot-key').value,
+    bot_key:        getCheckedBotKeys('s-bot-check-list').join(','),
     interval_value: parseFloat(document.getElementById('s-iv').value)||7,
     interval_unit:  document.getElementById('s-iu').value,
     start_time:     (document.getElementById('s-start').value ? document.getElementById('s-start').value + ':00+08:00' : new Date().toISOString()),
