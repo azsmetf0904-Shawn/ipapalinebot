@@ -1463,15 +1463,40 @@ def handle_text(event, bot_key: str = ""):
                 return
 
             # ── 關鍵字快捷回覆（不消耗 Gemini token）──
-            COURSE_KEYWORDS = ["課程", "有什麼課", "近期", "行程", "活動", "下週", "這週",
-                                "本週", "今天", "明天", "最近", "課表", "安排", "幾號", "什麼時候"]
+
+            # 方案一：關鍵字 → 對應分類名稱（精準過濾）
+            # key = 使用者可能說的詞，value = 資料庫 categories.name 的關鍵詞（部分比對）
+            KEYWORD_CATEGORY_MAP = {
+                "會議": ["會議"],
+                "開會": ["會議"],
+                "meeting": ["會議"],
+                "課程": ["課程", "培訓"],
+                "培訓": ["培訓", "課程"],
+                "活動": ["活動", "招商"],
+                "招商": ["招商"],
+            }
+
+            # 方案二：通用時間/查詢詞 → 查全部資料（不限分類）
+            GENERAL_KEYWORDS = ["有什麼", "近期", "行程", "下週", "這週", "本週",
+                                 "今天", "明天", "最近", "課表", "安排", "幾號", "什麼時候"]
+
             BROADCAST_KEYWORDS = ["公告", "最新消息", "有什麼消息", "廣播", "通知"]
 
-            is_course_query    = any(kw in clean_text for kw in COURSE_KEYWORDS)
+            # 判斷命中哪些分類關鍵字（方案一）
+            matched_categories = []  # 資料庫分類名稱的比對詞清單
+            for kw, cats in KEYWORD_CATEGORY_MAP.items():
+                if kw in clean_text:
+                    matched_categories.extend(cats)
+            matched_categories = list(set(matched_categories))
+
+            is_general_query   = any(kw in clean_text for kw in GENERAL_KEYWORDS)
             is_broadcast_query = any(kw in clean_text for kw in BROADCAST_KEYWORDS)
 
+            # 有命中分類關鍵字、通用查詢詞、或公告詞，才進快捷回覆
+            is_course_query = bool(matched_categories) or is_general_query
+
             if is_course_query or is_broadcast_query:
-                logger.info(f"[Shortcut Reply] keyword matched: {clean_text[:40]!r}")
+                logger.info(f"[Shortcut Reply] matched categories={matched_categories} general={is_general_query} text={clean_text[:40]!r}")
                 try:
                     now = now_tw()
                     today = now.date().isoformat()
@@ -1480,25 +1505,52 @@ def handle_text(event, bot_key: str = ""):
                     reply_lines = []
 
                     if is_course_query:
-                        _cur.execute("""
-                            SELECT c.title, c.course_date::text, c.course_time,
-                                   c.location, cat.name AS category
-                            FROM courses c
-                            LEFT JOIN categories cat ON c.category_id = cat.id
-                            WHERE c.course_date >= %s
-                            ORDER BY c.course_date ASC
-                            LIMIT 8
-                        """, (today,))
+                        if matched_categories:
+                            # 方案一：依分類過濾（比對 category 名稱 或 title 含關鍵詞）
+                            # 用 ILIKE ANY 比對分類名稱，同時用 title 做方案二兜底
+                            cat_conditions = " OR ".join(
+                                [f"cat.name ILIKE %s" for _ in matched_categories] +
+                                [f"c.title ILIKE %s" for _ in matched_categories]
+                            )
+                            params = (
+                                [f"%{c}%" for c in matched_categories] +   # cat.name
+                                [f"%{c}%" for c in matched_categories] +   # c.title
+                                [today]
+                            )
+                            _cur.execute(f"""
+                                SELECT c.title, c.course_date::text, c.course_time,
+                                       c.location, cat.name AS category
+                                FROM courses c
+                                LEFT JOIN categories cat ON c.category_id = cat.id
+                                WHERE ({cat_conditions})
+                                  AND c.course_date >= %s
+                                ORDER BY c.course_date ASC
+                                LIMIT 8
+                            """, params)
+                            label = f"近期{clean_text[:6].strip()}"
+                        else:
+                            # 通用查詢：查全部
+                            _cur.execute("""
+                                SELECT c.title, c.course_date::text, c.course_time,
+                                       c.location, cat.name AS category
+                                FROM courses c
+                                LEFT JOIN categories cat ON c.category_id = cat.id
+                                WHERE c.course_date >= %s
+                                ORDER BY c.course_date ASC
+                                LIMIT 8
+                            """, (today,))
+                            label = "近期行程"
+
                         rows = _cur.fetchall()
                         if rows:
-                            reply_lines.append("咕嚕咕嚕～\n幫你整理一下近期的課\n")
+                            reply_lines.append(f"咕嚕咕嚕～\n幫你整理一下{label}\n")
                             for r in rows:
                                 cat = f"[{r['category']}] " if r.get("category") else ""
                                 loc = f" 📍{r['location']}" if r.get("location") else ""
                                 reply_lines.append(f"📅 {r['course_date']} {r['course_time']} {cat}{r['title']}{loc}")
                             reply_lines.append("\n咕嘟～記得去")
                         else:
-                            reply_lines.append("咕嚕～\n最近好像沒有課\n咕…")
+                            reply_lines.append(f"咕嚕～\n最近好像沒有{label}相關的安排\n咕…")
 
                     if is_broadcast_query:
                         _cur.execute("""
@@ -1511,7 +1563,7 @@ def handle_text(event, bot_key: str = ""):
                         rows = _cur.fetchall()
                         if rows:
                             if reply_lines:
-                                reply_lines.append("")  # 空行分隔
+                                reply_lines.append("")
                             reply_lines.append("嗚咕～\n最新公告整理一下\n")
                             for r in rows:
                                 next_run = str(r["next_run"])[:16] if r.get("next_run") else ""
