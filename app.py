@@ -1510,16 +1510,49 @@ def handle_text(event, bot_key: str = ""):
 【品牌人格】
 「一隻平常很開朗、但吃飯時間會突然變餓、還是會記得提醒你的羊駝」
 
+【重要輸出格式】
+你必須輸出兩段訊息，中間用 ---SPLIT--- 分隔，不可有其他分隔符。
+第一段：主要回覆（回答使用者的問題或提醒）
+第二段：延伸話題（羊駝自然延伸的一句話，可以是反問、發呆聯想、或輕輕帶到相關事情）
+          延伸話題要短、自然、像是羊駝突然想到什麼，不可以是總結或重複第一段。
+
+範例輸出：
+咕嚕咕嚕～
+今天晚上九點有小組會議
+記得上線一下
+咕嘟～
+---SPLIT---
+咕…對了
+你上次說的那件事
+有想清楚了嗎
+
 用繁體中文回覆。
 """
-                ai_reply = gemini_call(
+                raw = gemini_call(
                     f"{IPAPA_PERSONA}\n現在是 {today} {now.strftime('%H:%M')}（台灣時間）。\n\n使用者問：{clean_text}",
                     max_tokens=800
                 )
-            except Exception as e:
-                ai_reply = f"❌ AI 暫時無法回覆，請稍後再試。\n（{str(e)[:60]}）"
 
-            reply_message(reply_token, ai_reply, bot_key=bot_key)
+                # 切分兩段訊息
+                parts = raw.split("---SPLIT---", 1)
+                msg1 = parts[0].strip()
+                msg2 = parts[1].strip() if len(parts) > 1 else ""
+
+            except Exception as e:
+                msg1 = f"❌ AI 暫時無法回覆，請稍後再試。\n（{str(e)[:60]}）"
+                msg2 = ""
+
+            # 一次 reply 送出最多兩則訊息（完全免費，不消耗 push 額度）
+            headers = get_bot_headers(bot_key) if bot_key else HEADERS
+            messages = [{"type": "text", "text": msg1}]
+            if msg2:
+                messages.append({"type": "text", "text": msg2})
+            requests.post(
+                "https://api.line.me/v2/bot/message/reply",
+                headers=headers,
+                json={"replyToken": reply_token, "messages": messages},
+                timeout=10
+            )
             return  # mention 處理完畢，不再走 Admin 指令邏輯
 
     if user_id not in ADMIN_USER_IDS:
