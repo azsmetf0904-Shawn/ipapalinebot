@@ -34,6 +34,26 @@ DATABASE_URL    = os.environ["DATABASE_URL"]   # Railway 自動注入
 IMGBB_API_KEY   = os.environ.get("IMGBB_API_KEY", "")
 APP_URL         = os.environ.get("APP_URL", "")
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
+# 備援 Gemini Key（最多支援 3 組，環境變數設 GEMINI_API_KEY_2、GEMINI_API_KEY_3）
+GEMINI_API_KEYS = [k for k in [
+    GEMINI_API_KEY,
+    os.environ.get("GEMINI_API_KEY_2", ""),
+    os.environ.get("GEMINI_API_KEY_3", ""),
+] if k.strip()]
+
+# ── 冷卻機制（in-memory，重啟清空）──
+import time as _time_module
+_cooldown_cache: dict = {}   # { user_id: last_trigger_timestamp }
+COOLDOWN_SECONDS = 30        # 同一用戶 30 秒內只能觸發一次
+
+def check_cooldown(user_id: str) -> bool:
+    """回傳 True 代表冷卻中（應拒絕），False 代表可以回覆"""
+    now_ts = _time_module.time()
+    last = _cooldown_cache.get(user_id, 0)
+    if now_ts - last < COOLDOWN_SECONDS:
+        return True
+    _cooldown_cache[user_id] = now_ts
+    return False
 
 # ── 多機器人設定 ──
 # 每個 Bot 用環境變數 BOT_<KEY>_TOKEN / BOT_<KEY>_SECRET / BOT_<KEY>_NAME / BOT_<KEY>_GROUPS 設定
@@ -80,10 +100,8 @@ HEADERS = get_bot_headers(next(iter(BOTS), "main")) if BOTS else {
 
 def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image/jpeg",
                image_url: str = "", max_tokens: int = 800, _retry: int = 3) -> str:
-    """呼叫 Gemini API，回傳純文字結果。遇到 429 自動重試最多 _retry 次。"""
+    """呼叫 Gemini API，遇到 429 自動輪換備援 key 並重試。"""
     import time
-    GEMINI_URL = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-                  f"gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}")
     parts = []
     if image_b64:
         parts.append({"inline_data": {"mime_type": image_media_type, "data": image_b64}})
@@ -97,39 +115,54 @@ def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image
     body = {
         "contents": [{"parts": parts}],
         "generationConfig": {
-            "maxOutputTokens": 2048,
-            "temperature": 0.1,
-            "thinkingConfig": {"thinkingBudget": 0}   # 關閉 thinking，節省 token 與時間
+            "maxOutputTokens": max_tokens,
+            "temperature": 0.7,
+            "thinkingConfig": {"thinkingBudget": 0}
         }
     }
 
-    for attempt in range(1, _retry + 1):
-        resp = requests.post(GEMINI_URL, headers={"Content-Type": "application/json"},
-                             json=body, timeout=60)
-        result = resp.json()
+    keys_to_try = GEMINI_API_KEYS if GEMINI_API_KEYS else [GEMINI_API_KEY]
+    last_error = "Gemini API 無可用金鑰"
 
-        if "error" in result:
-            err = result["error"]
-            code = err.get("code", 0)
-            msg  = err.get("message", "Gemini API 錯誤")
+    for key_index, api_key in enumerate(keys_to_try):
+        for attempt in range(1, _retry + 1):
+            url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+                   f"gemini-2.5-flash:generateContent?key={api_key}")
+            resp = requests.post(url, headers={"Content-Type": "application/json"},
+                                 json=body, timeout=60)
+            result = resp.json()
 
-            # 429 Rate Limit：等待後重試（縮短等待時間）
-            if code == 429 and attempt < _retry:
-                wait = 12 * attempt   # 第1次等12秒，第2次等24秒
-                logger.warning(f"Gemini 429 rate limit，{wait} 秒後重試（第 {attempt}/{_retry} 次）")
-                time.sleep(wait)
-                continue
+            if "error" in result:
+                err  = result["error"]
+                code = err.get("code", 0)
+                msg  = err.get("message", "Gemini API 錯誤")
 
-            raise Exception(msg)
+                if code == 429:
+                    # 先試備援 key（若還有的話）
+                    if key_index + 1 < len(keys_to_try):
+                        logger.warning(f"Gemini key[{key_index+1}] 429，切換備援 key[{key_index+2}]")
+                        last_error = msg
+                        break  # 跳出 attempt 迴圈，進入下一個 key
+                    # 沒有備援 key，等待後重試
+                    if attempt < _retry:
+                        wait = 12 * attempt
+                        logger.warning(f"Gemini 429（唯一key），{wait}秒後重試（{attempt}/{_retry}）")
+                        time.sleep(wait)
+                        continue
 
-        # gemini-2.5-flash 回傳的 parts 可能含 thinking，找第一個純文字 part
-        resp_parts = result["candidates"][0]["content"]["parts"]
-        text = next((p["text"] for p in resp_parts if p.get("thought") is not True and "text" in p), None)
-        if text is None:
-            raise Exception("Gemini 回傳內容無法解析")
-        return text.strip()
+                last_error = msg
+                break  # 非 429 錯誤，直接換下一個 key 或結束
 
-    raise Exception("Gemini API 重試次數已達上限，請稍後再試")
+            # 成功
+            resp_parts = result["candidates"][0]["content"]["parts"]
+            text = next((p["text"] for p in resp_parts if p.get("thought") is not True and "text" in p), None)
+            if text is None:
+                raise Exception("Gemini 回傳內容無法解析")
+            if key_index > 0:
+                logger.info(f"Gemini 使用備援 key[{key_index+1}] 成功")
+            return text.strip()
+
+    raise Exception(last_error)
 
 
 def fetch_group_name(group_id: str, bot_key: str = "") -> str:
@@ -1450,6 +1483,10 @@ def handle_text(event, bot_key: str = ""):
         is_quote_reply = bool(msg_obj.get("quotedMessageId"))
 
         if is_mentioned or is_quote_reply:
+            # ── 冷卻機制：同一用戶 30 秒內只能觸發一次 ──
+            if check_cooldown(user_id):
+                logger.info(f"[Cooldown] user={user_id} 冷卻中，略過")
+                return
             # 將訊息中所有 @機器人 的片段移除，取得純問題文字
             clean_text = text
             if is_mentioned:
