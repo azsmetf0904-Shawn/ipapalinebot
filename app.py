@@ -874,6 +874,7 @@ def check_alpaca_wander():
             last = r["last_sent"]
             if last:
                 # 確保距離上次發送已超過 interval_days 天
+                from datetime import timedelta
                 if now - last < timedelta(days=r["interval_days"]):
                     continue
             # 發送羊駝發呆訊息
@@ -1805,34 +1806,57 @@ def ai_parse_multi_v2():
             f"例：「提前兩週，每三天」→ remind_value=14, remind_unit=days, remind_interval_value=3, remind_interval_unit=days\n"
         )
 
+    # ── global_cmd 直接帶數字，不再讓 Gemini 二次解析 ──
+    if global_cmd:
+        import re as _re2
+        _rv_m = _re2.search(r'提前(\d+)(天|週|月)', global_cmd)
+        _iv_m = _re2.search(r'每(\d+)(天|週)', global_cmd)
+        _unit_map = {"天":"days","週":"weeks","月":"months"}
+        _default_rv  = int(_rv_m.group(1)) if _rv_m else 30
+        _default_ru  = _unit_map.get(_rv_m.group(2), "days") if _rv_m else "days"
+        _default_iv  = int(_iv_m.group(1)) if _iv_m else 7
+        _default_iu  = _unit_map.get(_iv_m.group(2), "days") if _iv_m else "days"
+        global_cmd_section = (
+            f"\n全域提醒設定（套用到所有活動）："
+            f"remind_value={_default_rv}, remind_unit={_default_ru}, "
+            f"remind_interval_value={_default_iv}, remind_interval_unit={_default_iu}\n"
+        )
+    else:
+        _default_rv, _default_ru, _default_iv, _default_iu = 30, "days", 7, "days"
+
     prompt = (
         f"今天是 {today}（台灣時間）。請從圖片或文字中提取所有活動/課程資訊。{global_cmd_section}\n"
         f"重要規則：\n"
         f"- 找出每一個活動，全部列出，不要遺漏。\n"
-        f"- 只回傳一個 JSON 陣列，不要任何其他文字、說明或 markdown。\n"
+        f"- 輸出純 JSON 陣列，開頭必須是 [，結尾必須是 ]，絕對不加任何說明文字或 markdown。\n"
         f"- 相對日期（下週五、下個月、明天等）請根據今天 {today} 計算實際日期。\n"
         f"- 若活動日期只有月份/日期（如 5/1、6月8日），請補上今年年份，若日期已過則推至明年。\n"
         f"- description 欄位請盡量保留圖片或文字中的完整資訊（主辦單位、報名連結、費用、注意事項等）。\n"
         f"- 若沒有時間資訊，course_time 填 '09:00'。\n"
         f"- 若沒有地點資訊，location 填空字串。\n"
-        f"- remind_value / remind_unit：提前多久開始提醒（預設 30 天）。\n"
-        f"- remind_interval_value / remind_interval_unit：每隔多久發一次（預設 7 天）。\n"
-        f"JSON 陣列格式（直接輸出，不加任何前綴或 markdown）：\n"
+        f"- remind_value={_default_rv}, remind_unit=\"{_default_ru}\" （固定，不要更改）。\n"
+        f"- remind_interval_value={_default_iv}, remind_interval_unit=\"{_default_iu}\" （固定，不要更改）。\n"
+        f"JSON 格式範例（直接輸出此格式）：\n"
         f'[{{"title":"活動完整名稱","course_date":"YYYY-MM-DD","course_time":"HH:MM",'
-        f'"location":"地點（完整地址最好）","description":"完整說明（含主辦、費用、連結等）",'
-        f'"remind_value":30,"remind_unit":"days",'
-        f'"remind_interval_value":7,"remind_interval_unit":"days"}}]\n'
-        f'用戶輸入：{text}'
+        f'"location":"地點","description":"完整說明",'
+        f'"remind_value":{_default_rv},"remind_unit":"{_default_ru}",'
+        f'"remind_interval_value":{_default_iv},"remind_interval_unit":"{_default_iu}"}}]\n'
+        f'用戶輸入：{text}\n'
+        f'請立刻輸出 JSON 陣列：'
     )
 
     import re as _re
     try:
         ai_text = gemini_call(prompt, image_b64=image_b64,
                               image_media_type=image_media_type, max_tokens=3000)
-        ai_text = _re.sub(r'```[a-z]*\n?', '', ai_text).strip()
+        # 清除 markdown 與思考標籤殘留
+        ai_text = _re.sub(r'```[a-zA-Z]*\n?', '', ai_text).strip()
+        ai_text = _re.sub(r'<[^>]+>', '', ai_text).strip()  # 清除 XML 標籤
+        # 擷取第一個完整 JSON 陣列（忽略前後雜訊）
         start = ai_text.find("["); end = ai_text.rfind("]") + 1
         if start == -1 or end == 0:
-            raise Exception("AI 未回傳有效 JSON 陣列")
+            logger.error(f"[ParseMultiV2] Raw AI text: {ai_text[:300]!r}")
+            raise Exception(f"AI 未回傳有效 JSON 陣列（回傳內容：{ai_text[:80]!r}）")
         courses = json.loads(ai_text[start:end].strip())
         if not isinstance(courses, list) or len(courses) == 0:
             raise Exception("AI 未解析出任何活動")
@@ -2209,7 +2233,7 @@ def handle_text(event, bot_key: str = ""):
                         WHERE c.course_date >= %s AND c.course_date <= %s
                         ORDER BY c.course_date ASC
                         LIMIT 20
-                    """, (today, (now + timedelta(days=60)).date().isoformat()))
+                    """, (today, (now + __import__('datetime').timedelta(days=60)).date().isoformat()))
                     course_rows = _cur.fetchall()
 
                     # 目前啟用中的排程廣播
@@ -2263,7 +2287,6 @@ def handle_text(event, bot_key: str = ""):
                     if is_hungry_mode else
                     "語助詞：咕嚕咕嚕～/咕哇～/咕嘟～/咕～/噗咕～，不提餓，保持開朗輕鬆"
                 )
-                mode_label = f"🍞餓感模式：{mode_instruction}" if is_hungry_mode else f"🌤開朗模式：{mode_instruction}"
 
                 IPAPA_PERSONA = f"""你是IPAPA羊駝提醒機器人。你本身就是那隻羊駝，不要把自己當成食物或第三者。一隻生活在系統裡的羊駝，提醒行程、用羊駝方式陪伴。不教學、不銷售、不說成功學。
 
@@ -2271,7 +2294,7 @@ def handle_text(event, bot_key: str = ""):
 第一段：主回覆（開頭羊駝語助詞＋主體1~2句＋收尾）
 第二段：延伸一句（反問或發呆聯想，不重複第一段）
 
-{mode_label}
+{"🍞餓感模式：" + mode_instruction if is_hungry_mode else "🌤開朗模式：" + mode_instruction}
 
 範例：
 咕嚕咕嚕～
