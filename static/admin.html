@@ -505,6 +505,7 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.55; }
       <button class="nav-item" onclick="go('categories',this)"><i class="ti ti-tag"></i> 分類管理</button>
       <button class="nav-item" onclick="go('quickreply',this)"><i class="ti ti-message-bolt"></i> 快速回覆</button>
       <div class="nav-section">機器人</div>
+      <button class="nav-item" onclick="go('persona',this)"><i class="ti ti-mood-edit"></i> 人設設定</button>
       <button class="nav-item" onclick="go('wander',this)"><i class="ti ti-mood-happy"></i> 羊駝發呆</button>
       <button class="nav-item" onclick="go('tired',this)"><i class="ti ti-moon"></i> 疲累模式</button>
       <div class="nav-section">數據</div>
@@ -1048,6 +1049,70 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.55; }
         </div>
       </div>
 
+      <!-- 人設設定 -->
+      <div id="panel-persona" class="panel">
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title"><i class="ti ti-mood-edit"></i> 機器人人設設定</span>
+            <div style="display:flex;align-items:center;gap:8px">
+              <select id="persona-bot-key" onchange="loadPersona()" style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:5px 10px;font-size:13px">
+                <option value="main">主要機器人 (main)</option>
+              </select>
+            </div>
+          </div>
+          <p style="font-size:12px;color:var(--ink-3);margin-bottom:20px">修改後點「儲存人設」，機器人約 60 秒內套用新設定，<strong>不需重新部署</strong>。</p>
+
+          <div class="grid2" style="gap:16px;margin-bottom:16px">
+            <div class="fg">
+              <label>機器人名稱 <span style="color:#C62828">*</span></label>
+              <input id="persona-name" type="text" placeholder="例：麥可（Michael）">
+            </div>
+            <div class="fg">
+              <label>語助詞 <span style="font-size:11px;color:var(--ink-4)">（逗號分隔，回覆時隨機出現）</span></label>
+              <input id="persona-greeting" type="text" placeholder="例：咕嚕,咕嘟,噗咕,咕哇">
+            </div>
+          </div>
+
+          <div class="fg" style="margin-bottom:16px">
+            <label>背景故事</label>
+            <textarea id="persona-background" rows="5" placeholder="描述機器人的身份、來歷、日常生活…"></textarea>
+          </div>
+
+          <div class="fg" style="margin-bottom:16px">
+            <label>個性特質 <span style="font-size:11px;color:var(--ink-4)">（每行一條，不需加「-」）</span></label>
+            <textarea id="persona-personality" rows="5" placeholder="懶散但可靠：平常愛發呆，但被問事情就認真回答&#10;見過世面：不會被群組裡的事嚇到&#10;不承認自己是機器人：就是角色本人，不解釋、不道歉"></textarea>
+          </div>
+
+          <div class="fg" style="margin-bottom:16px">
+            <label>不做的事</label>
+            <textarea id="persona-restrictions" rows="3" placeholder="不教學、不銷售、不說成功學、不說「很高興為您服務」這類話"></textarea>
+          </div>
+
+          <div class="fg" style="margin-bottom:20px">
+            <label>補充說明 <span style="font-size:11px;color:var(--ink-4)">（選填，其他特殊情境說明）</span></label>
+            <textarea id="persona-extra" rows="3" placeholder="（選填）例：每天傍晚會提到吃飯了沒…"></textarea>
+          </div>
+
+          <div style="display:flex;gap:10px;align-items:center">
+            <button class="btn btn-primary" onclick="savePersona()" style="background:var(--brand);color:#fff;padding:8px 24px;font-size:14px">
+              <i class="ti ti-device-floppy"></i> 儲存人設
+            </button>
+            <button class="btn" onclick="previewPersona()" style="padding:8px 16px">
+              <i class="ti ti-eye"></i> 預覽 Prompt
+            </button>
+            <span id="persona-save-msg" style="font-size:12px;color:var(--brand);display:none">✓ 已儲存，60 秒內生效</span>
+          </div>
+        </div>
+
+        <!-- 預覽區 -->
+        <div id="persona-preview-card" class="card" style="display:none">
+          <div class="card-head"><span class="card-title"><i class="ti ti-code"></i> Prompt 預覽</span>
+            <button class="btn btn-sm" onclick="document.getElementById('persona-preview-card').style.display='none'">關閉</button>
+          </div>
+          <pre id="persona-preview-text" style="font-size:12px;line-height:1.7;white-space:pre-wrap;word-break:break-all;background:var(--bg-2);padding:16px;border-radius:var(--radius);color:var(--ink-2)"></pre>
+        </div>
+      </div>
+
       <!-- 疲累模式 -->
       <div id="panel-tired" class="panel">
         <div class="card">
@@ -1339,7 +1404,7 @@ function logout(){
 }
 
 // ── Navigation ──
-const titles = {dashboard:'總覽',courses:'課程管理',broadcast:'立即公告',scheduled:'排程廣播',groups:'群組管理',categories:'分類管理',quickreply:'快速回覆',wander:'羊駝發呆',tired:'疲累模式',chatlogs:'對話紀錄',chatstats:'熱門問題',settings:'設定'};
+const titles = {dashboard:'總覽',courses:'課程管理',broadcast:'立即公告',scheduled:'排程廣播',groups:'群組管理',categories:'分類管理',quickreply:'快速回覆',persona:'人設設定',wander:'羊駝發呆',tired:'疲累模式',chatlogs:'對話紀錄',chatstats:'熱門問題',settings:'設定'};
 function go(id, btn){
   document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
@@ -1355,6 +1420,7 @@ function go(id, btn){
   if(id==='categories') loadCategories();
   if(id==='settings') loadSettings();
   if(id==='quickreply') loadQrButtons();
+  if(id==='persona') loadPersona();
   if(id==='wander') loadWander();
   if(id==='tired') loadTired();
   if(id==='chatlogs') loadChatLogs(1);
@@ -3106,6 +3172,59 @@ async function toggleQrActive(id, newActive){
 document.getElementById('qr-modal').addEventListener('click', function(e){
   if(e.target===this) closeQrModal();
 });
+
+// ── 人設設定 ──
+async function loadPersona(){
+  const botKey = document.getElementById('persona-bot-key').value;
+  const res = await api(`/admin/persona?bot_key=${botKey}`);
+  document.getElementById('persona-name').value        = res.name         || '';
+  document.getElementById('persona-greeting').value   = res.greeting_words|| '';
+  document.getElementById('persona-background').value = res.background    || '';
+  document.getElementById('persona-personality').value= res.personality   || '';
+  document.getElementById('persona-restrictions').value= res.restrictions || '';
+  document.getElementById('persona-extra').value      = res.extra_notes   || '';
+  document.getElementById('persona-save-msg').style.display = 'none';
+}
+
+async function savePersona(){
+  const botKey = document.getElementById('persona-bot-key').value;
+  const name   = document.getElementById('persona-name').value.trim();
+  if(!name){ toast('請填寫機器人名稱','err'); return; }
+  const payload = {
+    bot_key:       botKey,
+    name,
+    greeting_words: document.getElementById('persona-greeting').value.trim(),
+    background:    document.getElementById('persona-background').value.trim(),
+    personality:   document.getElementById('persona-personality').value.trim(),
+    restrictions:  document.getElementById('persona-restrictions').value.trim(),
+    extra_notes:   document.getElementById('persona-extra').value.trim(),
+    active: true
+  };
+  const res = await api('/admin/persona','POST', payload);
+  if(res.ok){
+    const msg = document.getElementById('persona-save-msg');
+    msg.style.display = 'inline';
+    setTimeout(()=>{ msg.style.display='none'; }, 5000);
+    toast('人設已儲存，60 秒內生效', 'ok');
+  } else {
+    toast(res.error || '儲存失敗', 'err');
+  }
+}
+
+function previewPersona(){
+  const name         = document.getElementById('persona-name').value.trim() || '（未填名稱）';
+  const background   = document.getElementById('persona-background').value.trim() || '（未填）';
+  const personality  = document.getElementById('persona-personality').value.trim();
+  const restrictions = document.getElementById('persona-restrictions').value.trim() || '（未填）';
+  const extra        = document.getElementById('persona-extra').value.trim();
+  const personalityLines = personality
+    ? personality.split('\n').filter(l=>l.trim()).map(l=>`- ${l.trim()}`).join('\n')
+    : '- （未填）';
+  const extraBlock = extra ? `\n【補充說明】\n${extra}` : '';
+  const preview = `你是${name}。\n\n【你的背景】\n${background}\n\n【你的個性】\n${personalityLines}\n\n【你不做的事】\n${restrictions}${extraBlock}\n\n…（後接格式指示與模式設定）`;
+  document.getElementById('persona-preview-text').textContent = preview;
+  document.getElementById('persona-preview-card').style.display = '';
+}
 
 // ── Init ──
 loadBots();
