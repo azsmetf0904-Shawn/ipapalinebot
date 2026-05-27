@@ -727,7 +727,30 @@ textarea{resize:vertical;min-height:72px}
               <div class="fg">
                 <label style="font-size:12px;color:#666">幾點後進入疲累模式</label>
                 <select id="tired-hour" style="border:1px solid #E8E8E4;border-radius:6px;padding:6px 10px;font-size:13px;width:100%">
-                  ${[...Array(24)].map((_,h)=>`<option value="${h}">${String(h).padStart(2,'0')}:00</option>`).join('')}
+                  <option value="0">00:00</option>
+                  <option value="1">01:00</option>
+                  <option value="2">02:00</option>
+                  <option value="3">03:00</option>
+                  <option value="4">04:00</option>
+                  <option value="5">05:00</option>
+                  <option value="6">06:00</option>
+                  <option value="7">07:00</option>
+                  <option value="8">08:00</option>
+                  <option value="9">09:00</option>
+                  <option value="10">10:00</option>
+                  <option value="11">11:00</option>
+                  <option value="12">12:00</option>
+                  <option value="13">13:00</option>
+                  <option value="14">14:00</option>
+                  <option value="15">15:00</option>
+                  <option value="16">16:00</option>
+                  <option value="17">17:00</option>
+                  <option value="18">18:00</option>
+                  <option value="19">19:00</option>
+                  <option value="20">20:00</option>
+                  <option value="21">21:00</option>
+                  <option value="22">22:00</option>
+                  <option value="23">23:00</option>
                 </select>
               </div>
               <button class="btn" onclick="saveTiredHour()" style="width:100%;margin-top:10px">儲存時段設定</button>
@@ -749,9 +772,19 @@ textarea{resize:vertical;min-height:72px}
         <div class="card">
           <div class="card-head"><span class="card-title">疲累訊息預覽</span></div>
           <div style="display:flex;flex-direction:column;gap:8px">
-            ${["咕嚕…有點累\n等我休息一下","咕…今天話說太多了\n明天再聊","嗚咕…\n我需要睡一下\n咕","咕嚕嚕…\n好累喔\n改天再說","咕…\n撐不住了\n掰掰"].map(m=>`
-              <div style="background:#E9FBF0;border-radius:8px;padding:10px 14px;font-size:13px;white-space:pre-wrap;color:#1A5A2A">${m}</div>
-            `).join('')}
+            <div style="background:#E9FBF0;border-radius:8px;padding:10px 14px;font-size:13px;white-space:pre-wrap;color:#1A5A2A">咕嚕…有點累
+等我休息一下</div>
+            <div style="background:#E9FBF0;border-radius:8px;padding:10px 14px;font-size:13px;white-space:pre-wrap;color:#1A5A2A">咕…今天話說太多了
+明天再聊</div>
+            <div style="background:#E9FBF0;border-radius:8px;padding:10px 14px;font-size:13px;white-space:pre-wrap;color:#1A5A2A">嗚咕…
+我需要睡一下
+咕</div>
+            <div style="background:#E9FBF0;border-radius:8px;padding:10px 14px;font-size:13px;white-space:pre-wrap;color:#1A5A2A">咕嚕嚕…
+好累喔
+改天再說</div>
+            <div style="background:#E9FBF0;border-radius:8px;padding:10px 14px;font-size:13px;white-space:pre-wrap;color:#1A5A2A">咕…
+撐不住了
+掰掰</div>
           </div>
         </div>
       </div>
@@ -770,7 +803,7 @@ textarea{resize:vertical;min-height:72px}
           <div id="log-summary" style="font-size:12px;color:#999;margin-bottom:10px"></div>
           <table class="tbl">
             <thead><tr><th>時間</th><th>群組</th><th>用戶ID</th><th>問題</th><th>羊駝回覆</th></tr></thead>
-            <tbody id="log-tbody"><tr><td colspan="5" style="text-align:center;color:#999;padding:20px">選擇篩選條件後點搜尋</td></tr></tbody>
+            <tbody id="log-tbody"><tr><td colspan="5" style="text-align:center;color:#999;padding:20px">載入中...</td></tr></tbody>
           </table>
           <div id="log-pagination" style="display:flex;gap:6px;justify-content:center;margin-top:12px"></div>
         </div>
@@ -2458,11 +2491,12 @@ async function loadChatLogs(page=1){
   const tbody = document.getElementById('log-tbody');
   tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#999;padding:20px">載入中...</td></tr>';
 
+  try {
   // 載入群組清單（只第一次）
   const sel = document.getElementById('log-group-filter');
   if(sel.options.length <= 1){
-    const gs = await api('/api/groups');
-    (gs.groups||gs||[]).forEach(g=>{
+    const gs = await api('/admin/groups');
+    (gs.groups||[]).forEach(g=>{
       const o = document.createElement('option');
       o.value = g.group_id; o.textContent = g.group_name || g.group_id;
       sel.appendChild(o);
@@ -2471,6 +2505,10 @@ async function loadChatLogs(page=1){
 
   const params = new URLSearchParams({page, group_id, keyword});
   const res = await api('/api/chat-logs?'+params);
+  if(!res || res.error){
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#C62828;padding:20px">載入失敗：${res?.error||'請確認登入狀態'}</td></tr>`;
+    return;
+  }
   document.getElementById('log-summary').textContent =
     `共 ${res.total} 筆紀錄，第 ${page} 頁（每頁 ${res.per_page} 筆）`;
 
@@ -2508,6 +2546,9 @@ async function loadChatLogs(page=1){
     pg.appendChild(b);
     if(totalPages > 10 && i===3 && page > 5){ const s=document.createElement('span'); s.textContent='…'; s.style.padding='0 4px'; pg.appendChild(s); i=Math.max(i,page-2)-1; }
   }
+  } catch(e){
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#C62828;padding:20px">錯誤：${e.message}</td></tr>`;
+  }
 }
 
 function escHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -2515,7 +2556,12 @@ function escHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
 // ── 熱門關鍵字統計 ──
 async function loadChatStats(){
   document.getElementById('stats-list').innerHTML = '<div style="text-align:center;color:#999;padding:20px">載入中...</div>';
+  try {
   const res = await api('/api/chat-stats');
+  if(!res || res.error){
+    document.getElementById('stats-list').innerHTML = `<div style="text-align:center;color:#C62828;padding:20px">載入失敗：${res?.error||'請確認登入狀態'}</div>`;
+    return;
+  }
   document.getElementById('stats-summary').textContent = `共分析 ${res.total_questions} 則問題`;
 
   if(!res.keywords || res.keywords.length === 0){
@@ -2534,6 +2580,9 @@ async function loadChatStats(){
       <div style="font-size:13px;color:#666;min-width:40px;text-align:right">${k.count} 次</div>
     </div>
   `).join('');
+  } catch(e){
+    document.getElementById('stats-list').innerHTML = `<div style="text-align:center;color:#C62828;padding:20px">錯誤：${e.message}</div>`;
+  }
 }
 
 // ── 羊駝發呆 ──
