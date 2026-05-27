@@ -1462,6 +1462,78 @@ def handle_text(event, bot_key: str = ""):
                 reply_message(reply_token, "咕嚕～？", bot_key=bot_key)
                 return
 
+            # ── 關鍵字快捷回覆（不消耗 Gemini token）──
+            COURSE_KEYWORDS = ["課程", "有什麼課", "近期", "行程", "活動", "下週", "這週",
+                                "本週", "今天", "明天", "最近", "課表", "安排", "幾號", "什麼時候"]
+            BROADCAST_KEYWORDS = ["公告", "最新消息", "有什麼消息", "廣播", "通知"]
+
+            is_course_query    = any(kw in clean_text for kw in COURSE_KEYWORDS)
+            is_broadcast_query = any(kw in clean_text for kw in BROADCAST_KEYWORDS)
+
+            if is_course_query or is_broadcast_query:
+                logger.info(f"[Shortcut Reply] keyword matched: {clean_text[:40]!r}")
+                try:
+                    now = now_tw()
+                    today = now.date().isoformat()
+                    _conn = get_db(); _cur = _conn.cursor()
+
+                    reply_lines = []
+
+                    if is_course_query:
+                        _cur.execute("""
+                            SELECT c.title, c.course_date::text, c.course_time,
+                                   c.location, cat.name AS category
+                            FROM courses c
+                            LEFT JOIN categories cat ON c.category_id = cat.id
+                            WHERE c.course_date >= %s
+                            ORDER BY c.course_date ASC
+                            LIMIT 8
+                        """, (today,))
+                        rows = _cur.fetchall()
+                        if rows:
+                            reply_lines.append("咕嚕咕嚕～\n幫你整理一下近期的課\n")
+                            for r in rows:
+                                cat = f"[{r['category']}] " if r.get("category") else ""
+                                loc = f" 📍{r['location']}" if r.get("location") else ""
+                                reply_lines.append(f"📅 {r['course_date']} {r['course_time']} {cat}{r['title']}{loc}")
+                            reply_lines.append("\n咕嘟～記得去")
+                        else:
+                            reply_lines.append("咕嚕～\n最近好像沒有課\n咕…")
+
+                    if is_broadcast_query:
+                        _cur.execute("""
+                            SELECT title, content, next_run
+                            FROM scheduled_broadcasts
+                            WHERE active = TRUE
+                            ORDER BY next_run ASC
+                            LIMIT 5
+                        """)
+                        rows = _cur.fetchall()
+                        if rows:
+                            if reply_lines:
+                                reply_lines.append("")  # 空行分隔
+                            reply_lines.append("嗚咕～\n最新公告整理一下\n")
+                            for r in rows:
+                                next_run = str(r["next_run"])[:16] if r.get("next_run") else ""
+                                reply_lines.append(f"📢 {r['title']}")
+                                reply_lines.append(f"   {str(r['content'])[:60]}")
+                                if next_run:
+                                    reply_lines.append(f"   🕐 {next_run}")
+                            reply_lines.append("\n咕～")
+                        else:
+                            if not reply_lines:
+                                reply_lines.append("咕嚕～\n目前沒有公告\n咕…")
+
+                    _cur.close(); _conn.close()
+
+                    shortcut_msg = "\n".join(reply_lines)
+                    reply_message(reply_token, shortcut_msg, bot_key=bot_key)
+                    return
+
+                except Exception as e:
+                    logger.warning(f"[Shortcut Reply] failed, fallback to Gemini: {e}")
+                    # 查詢失敗就 fallback 給 Gemini 處理，不中斷
+
             logger.info(f"[AI Mention] user={user_id} question={clean_text[:50]!r}")
             try:
                 now = now_tw()
