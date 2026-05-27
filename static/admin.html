@@ -215,6 +215,7 @@ textarea{resize:vertical;min-height:72px}
       <button class="nav-item" onclick="go('groups',this)"><i class="ti ti-users"></i> 群組管理</button>
       <button class="nav-item" onclick="go('categories',this)"><i class="ti ti-tag"></i> 分類管理</button>
       <button class="nav-item" onclick="go('wander',this)"><i class="ti ti-mood-happy"></i> 羊駝發呆</button>
+      <button class="nav-item" onclick="go('tired',this)"><i class="ti ti-moon"></i> 疲累模式</button>
       <button class="nav-item" onclick="go('chatlogs',this)"><i class="ti ti-message-2"></i> 對話紀錄</button>
       <button class="nav-item" onclick="go('chatstats',this)"><i class="ti ti-chart-bar"></i> 熱門問題</button>
       <button class="nav-item" onclick="go('settings',this)"><i class="ti ti-settings"></i> 設定</button>
@@ -666,6 +667,55 @@ textarea{resize:vertical;min-height:72px}
         </div>
       </div>
 
+      <!-- 疲累模式 -->
+      <div id="panel-tired" class="panel">
+        <div class="card">
+          <div class="card-head"><span class="card-title"><i class="ti ti-moon"></i> 羊駝疲累模式</span></div>
+          <p style="font-size:12px;color:#999;margin-bottom:20px">疲累模式啟用時，羊駝不會呼叫 Gemini AI，只回覆短句，節省 token 用量。每天凌晨 0 點自動重置（手動強制除外）。</p>
+
+          <!-- 目前狀態 -->
+          <div id="tired-status-box" style="background:#F5F5F0;border-radius:10px;padding:16px;margin-bottom:20px;text-align:center">
+            <div id="tired-emoji" style="font-size:36px;margin-bottom:8px">🦙</div>
+            <div id="tired-status-text" style="font-size:15px;font-weight:600;color:#1A1A1A">載入中...</div>
+            <div id="tired-status-sub" style="font-size:12px;color:#999;margin-top:4px"></div>
+          </div>
+
+          <div class="grid2" style="gap:16px">
+            <!-- 時段觸發設定 -->
+            <div style="background:#F9F9F7;border-radius:8px;padding:16px">
+              <div style="font-size:13px;font-weight:600;margin-bottom:12px;color:#1A1A1A">⏰ 時段自動觸發</div>
+              <div class="fg">
+                <label style="font-size:12px;color:#666">幾點後進入疲累模式</label>
+                <select id="tired-hour" style="border:1px solid #E8E8E4;border-radius:6px;padding:6px 10px;font-size:13px;width:100%">
+                  ${[...Array(24)].map((_,h)=>`<option value="${h}">${String(h).padStart(2,'0')}:00</option>`).join('')}
+                </select>
+              </div>
+              <button class="btn" onclick="saveTiredHour()" style="width:100%;margin-top:10px">儲存時段設定</button>
+            </div>
+
+            <!-- 手動開關 -->
+            <div style="background:#F9F9F7;border-radius:8px;padding:16px">
+              <div style="font-size:13px;font-weight:600;margin-bottom:12px;color:#1A1A1A">🔧 手動控制</div>
+              <p style="font-size:12px;color:#999;margin-bottom:12px">手動強制開啟時不受時段和重置影響，直到手動關閉為止。</p>
+              <div style="display:flex;gap:8px">
+                <button class="btn" onclick="setTiredManual(true)" style="flex:1;background:#FF6B35;color:#fff">強制開啟</button>
+                <button class="btn" onclick="setTiredManual(false)" style="flex:1;background:#06C755;color:#fff">強制關閉</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 疲累回覆預覽 -->
+        <div class="card">
+          <div class="card-head"><span class="card-title">疲累訊息預覽</span></div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            ${["咕嚕…有點累\n等我休息一下","咕…今天話說太多了\n明天再聊","嗚咕…\n我需要睡一下\n咕","咕嚕嚕…\n好累喔\n改天再說","咕…\n撐不住了\n掰掰"].map(m=>`
+              <div style="background:#E9FBF0;border-radius:8px;padding:10px 14px;font-size:13px;white-space:pre-wrap;color:#1A5A2A">${m}</div>
+            `).join('')}
+          </div>
+        </div>
+      </div>
+
       <!-- 對話紀錄 -->
       <div id="panel-chatlogs" class="panel">
         <div class="card">
@@ -875,7 +925,7 @@ function logout(){
 }
 
 // ── Navigation ──
-const titles = {dashboard:'總覽',courses:'課程管理',broadcast:'立即公告',scheduled:'排程廣播',groups:'群組管理',categories:'分類管理',wander:'羊駝發呆',chatlogs:'對話紀錄',chatstats:'熱門問題',settings:'設定'};
+const titles = {dashboard:'總覽',courses:'課程管理',broadcast:'立即公告',scheduled:'排程廣播',groups:'群組管理',categories:'分類管理',wander:'羊駝發呆',tired:'疲累模式',chatlogs:'對話紀錄',chatstats:'熱門問題',settings:'設定'};
 function go(id, btn){
   document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
@@ -891,6 +941,7 @@ function go(id, btn){
   if(id==='categories') loadCategories();
   if(id==='settings') loadSettings();
   if(id==='wander') loadWander();
+  if(id==='tired') loadTired();
   if(id==='chatlogs') loadChatLogs(1);
   if(id==='chatstats') loadChatStats();
 }
@@ -2258,6 +2309,55 @@ function fmtInterval(s){
   if(s>=86400)   return Math.round(s/86400)+'天';
   if(s>=3600)    return Math.round(s/3600)+'小時';
   return Math.round(s/60)+'分鐘';
+}
+
+// ── 疲累模式 ──
+async function loadTired(){
+  const res = await api('/api/tired');
+  updateTiredUI(res);
+  // 補齊 select options（template literal 在 HTML 裡不會執行）
+  const sel = document.getElementById('tired-hour');
+  if(sel && sel.options.length === 0){
+    for(let h=0;h<24;h++){
+      const o = document.createElement('option');
+      o.value = h; o.textContent = String(h).padStart(2,'0')+':00';
+      sel.appendChild(o);
+    }
+  }
+  if(sel) sel.value = res.tired_hour;
+}
+
+function updateTiredUI(res){
+  const emoji = document.getElementById('tired-emoji');
+  const text  = document.getElementById('tired-status-text');
+  const sub   = document.getElementById('tired-status-sub');
+  const box   = document.getElementById('tired-status-box');
+  if(res.enabled){
+    emoji.textContent = '😴';
+    text.textContent  = '疲累模式啟用中';
+    text.style.color  = '#FF6B35';
+    box.style.background = '#FFF3EE';
+    sub.textContent   = res.manual ? '手動強制開啟' : `超過 ${res.tired_hour}:00 自動觸發`;
+  } else {
+    emoji.textContent = '🦙';
+    text.textContent  = '羊駝精神飽滿';
+    text.style.color  = '#06A847';
+    box.style.background = '#E9FBF0';
+    sub.textContent   = `設定：${res.tired_hour}:00 後進入疲累`;
+  }
+}
+
+async function saveTiredHour(){
+  const h = parseInt(document.getElementById('tired-hour').value);
+  const res = await api('/api/tired','POST',{tired_hour: h});
+  updateTiredUI(res);
+  toast(`已設定：${String(h).padStart(2,'0')}:00 後進入疲累模式`, 'ok');
+}
+
+async function setTiredManual(enabled){
+  const res = await api('/api/tired','POST',{manual_enabled: enabled});
+  updateTiredUI(res);
+  toast(enabled ? '已強制開啟疲累模式' : '已強制關閉疲累模式', 'ok');
 }
 
 // ── 對話紀錄 ──
