@@ -151,6 +151,59 @@ def _load_bots() -> dict:
 
 BOTS = _load_bots()
 
+# ── Bot 設定熱載入（DB 覆寫層，不需重啟即可生效）──
+# DB 表 bot_settings 儲存需要動態調整的欄位（目前支援 name、groups）。
+# Token / Secret 仍建議放環境變數（安全考量），DB 層僅補充非機密設定。
+# 熱載入 TTL：60 秒（與 persona 快取一致），後台存檔後最多 60 秒生效。
+_BOT_SETTINGS_CACHE: dict = {}   # { bot_key: {"data": {...}, "ts": float} }
+_BOT_SETTINGS_LOCK = threading.Lock()
+BOT_SETTINGS_CACHE_TTL = 60
+
+def get_bot_settings(bot_key: str) -> dict:
+    """從 DB 讀取 bot_settings 覆寫層（若找不到則回傳空 dict）。帶 TTL 快取。"""
+    now_ts = time.time()
+    with _BOT_SETTINGS_LOCK:
+        cached = _BOT_SETTINGS_CACHE.get(bot_key)
+        if cached and now_ts - cached["ts"] < BOT_SETTINGS_CACHE_TTL:
+            return cached["data"]
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT * FROM bot_settings WHERE bot_key=%s LIMIT 1",
+                (bot_key,)
+            )
+            row = cur.fetchone()
+        data = dict(row) if row else {}
+    except Exception as e:
+        logger.warning(f"[BotSettings] DB read error: {e}")
+        data = {}
+    with _BOT_SETTINGS_LOCK:
+        _BOT_SETTINGS_CACHE[bot_key] = {"data": data, "ts": now_ts}
+    return data
+
+def invalidate_bot_settings_cache(bot_key: str = ""):
+    """後台存檔後呼叫，清除快取讓下次立即重讀 DB。"""
+    with _BOT_SETTINGS_LOCK:
+        if bot_key:
+            _BOT_SETTINGS_CACHE.pop(bot_key, None)
+        else:
+            _BOT_SETTINGS_CACHE.clear()
+
+def get_bot_config(bot_key: str) -> dict:
+    """取得 Bot 完整設定：環境變數為底層，DB bot_settings 可覆寫 name / groups。
+    呼叫端原本直接查 BOTS[bot_key] 的地方，可改用此函式取得熱載入後的設定。
+    """
+    base = dict(BOTS.get(bot_key, {}))  # 環境變數底層（含 token / secret）
+    db_overrides = get_bot_settings(bot_key)
+    if db_overrides.get("name"):
+        base["name"] = db_overrides["name"]
+    if db_overrides.get("groups"):
+        # DB 的 groups 為逗號分隔字串
+        extra = [g.strip() for g in db_overrides["groups"].split(",") if g.strip()]
+        base["groups"] = list(set(base.get("groups", []) + extra))
+    return base
+
 # 向下相容：保留舊變數（用第一個 bot 填充，供 verify_signature 等使用）
 _first_bot = next(iter(BOTS.values())) if BOTS else {}
 LINE_CHANNEL_SECRET       = _first_bot.get("secret", os.environ.get("LINE_CHANNEL_SECRET", ""))
@@ -260,7 +313,19 @@ def gemini_call(prompt: str, image_b64: str = "", image_media_type: str = "image
     if image_b64:
         parts.append({"inline_data": {"mime_type": image_media_type, "data": image_b64}})
     elif image_url:
-        img_resp = requests.get(image_url, timeout=10)
+        # 圖片下載加重試（網路抖動時自動重試最多 3 次）
+        img_resp = None
+        for _img_attempt in range(1, 4):
+            try:
+                img_resp = requests.get(image_url, timeout=15)
+                img_resp.raise_for_status()
+                break
+            except Exception as _img_err:
+                if _img_attempt < 3:
+                    logger.warning(f"[Gemini] 圖片下載失敗（第{_img_attempt}次）: {_img_err}，重試中…")
+                    time.sleep(1.5 * _img_attempt)
+                else:
+                    raise Exception(f"Gemini 圖片下載失敗（已重試3次）: {_img_err}")
         b64 = base64.b64encode(img_resp.content).decode()
         mime = img_resp.headers.get("Content-Type", "image/jpeg").split(";")[0]
         parts.append({"inline_data": {"mime_type": mime, "data": b64}})
@@ -512,6 +577,9 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS chat_memory_lookup
             ON chat_memory (user_id, group_id, created_at DESC);
+        -- 複合索引：加速 save_chat_memory 的 DELETE 子查詢（NOT IN + ORDER BY id DESC）
+        CREATE INDEX IF NOT EXISTS chat_memory_cleanup
+            ON chat_memory (user_id, group_id, id DESC);
 
         CREATE TABLE IF NOT EXISTS alpaca_wander (
             id           SERIAL PRIMARY KEY,
@@ -577,6 +645,15 @@ def init_db():
         CREATE TABLE IF NOT EXISTS app_settings (
             key        TEXT PRIMARY KEY,
             value      TEXT NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL
+        );
+
+        -- Bot 設定熱載入覆寫表（name / groups 可在後台動態修改，無需重啟）
+        -- token / secret 仍建議存環境變數，不放 DB（安全考量）
+        CREATE TABLE IF NOT EXISTS bot_settings (
+            bot_key    TEXT PRIMARY KEY,
+            name       TEXT DEFAULT '',
+            groups     TEXT DEFAULT '',      -- 逗號分隔的額外群組 ID
             updated_at TIMESTAMPTZ NOT NULL
         );
     """)
@@ -678,7 +755,7 @@ def get_chat_memory(user_id: str, group_id: str, limit: int = 3) -> list[dict]:
         return []
 
 def save_chat_memory(user_id: str, group_id: str, user_msg: str, assistant_msg: str):
-    """儲存一輪對話，並自動清理超過 3 輪的舊記憶"""
+    """儲存一輪對話，並自動清理超過 3 輪的舊記憶（利用 chat_memory_cleanup 索引）"""
     try:
         with db_conn() as conn:
             cur = conn.cursor()
@@ -690,14 +767,17 @@ def save_chat_memory(user_id: str, group_id: str, user_msg: str, assistant_msg: 
                 VALUES (%s,%s,'user',%s,%s), (%s,%s,'assistant',%s,%s)
             """, (user_id, group_id, user_msg, now_user,
                   user_id, group_id, assistant_msg, now_asst))
+            # 利用 (user_id, group_id, id DESC) 複合索引：
+            # 先找出第 7 筆的 id（保留最新 6 筆），再刪除所有 id 更小的舊紀錄。
+            # 比原本的 NOT IN (SELECT ... LIMIT 6) 更能走索引，避免 Seq Scan。
             cur.execute("""
                 DELETE FROM chat_memory
                 WHERE user_id = %s AND group_id = %s
-                  AND id NOT IN (
+                  AND id < (
                       SELECT id FROM chat_memory
                       WHERE user_id = %s AND group_id = %s
-                      ORDER BY created_at DESC
-                      LIMIT 6
+                      ORDER BY id DESC
+                      LIMIT 1 OFFSET 5
                   )
             """, (user_id, group_id, user_id, group_id))
             conn.commit()
@@ -3374,6 +3454,52 @@ def delete_quick_reply_button(bid):
         cur.execute("DELETE FROM quick_reply_buttons WHERE id=%s", (bid,))
     conn.commit()
     return jsonify({"ok":True})
+
+# ── Bot 設定熱載入 API ──
+@app.route("/admin/bot-settings", methods=["GET"])
+def get_bot_settings_api():
+    """列出所有 bot 的熱載入覆寫設定（name / groups）"""
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT bot_key, name, groups, updated_at FROM bot_settings ORDER BY bot_key")
+            rows = [dict(r) for r in cur.fetchall()]
+        for r in rows:
+            if r.get("updated_at"): r["updated_at"] = str(r["updated_at"])
+        # 同時回傳目前從環境變數載入的 bot_key 清單（方便前端對照）
+        env_keys = list(BOTS.keys())
+        return jsonify({"env_bots": env_keys, "db_overrides": rows})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/bot-settings/<bot_key>", methods=["PUT"])
+def update_bot_settings_api(bot_key):
+    """更新單一 bot 的熱載入覆寫設定，存入 DB 並立刻讓快取失效。
+    Body JSON: {"name": "...", "groups": "gid1,gid2"}
+    Token / Secret 不接受從此 API 寫入（請改環境變數）。
+    """
+    if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
+    d = request.json or {}
+    name   = d.get("name", "").strip()
+    groups = d.get("groups", "").strip()
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO bot_settings (bot_key, name, groups, updated_at)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (bot_key) DO UPDATE
+                  SET name=%s, groups=%s, updated_at=%s
+            """, (bot_key, name, groups, isonow(),
+                  name, groups, isonow()))
+            conn.commit()
+        invalidate_bot_settings_cache(bot_key)
+        logger.info(f"[BotSettings] bot_key={bot_key!r} updated (name={name!r}, groups={groups!r})")
+        return jsonify({"ok": True})
+    except Exception as e:
+        logger.error(f"[BotSettings] update failed: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 def _process_events(events: list, bot_key: str):
     """在背景執行緒中處理所有 LINE 事件，避免 Webhook 5 秒逾時。"""
