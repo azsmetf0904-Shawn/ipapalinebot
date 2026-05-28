@@ -179,6 +179,55 @@ _KW_CACHE: dict = {}
 _KW_CACHE_TS: float = 0.0
 _KW_CACHE_TTL = 120  # 秒；後台改完最多 2 分鐘生效
 
+# ── 課程訊息格式化共用函式 ──
+
+def _fmt_course_reminder(row, timing: str = "") -> tuple[str, list]:
+    """
+    將課程 DB row 格式化成「課程提醒」訊息文字與 LINE messages list。
+    row 需包含: title, course_date, course_time, category_name(可無), location(可無),
+               description(可無), image_url(可無)
+    timing: 「【今天上課】」「【還有 N 天】」等前置標籤；空字串則省略標頭
+    回傳: (text, msgs)
+      text: 純文字訊息內容
+      msgs: LINE message 物件 list（可能含 image + text）
+    """
+    cat  = f"[{row['category_name']}] " if row.get("category_name") else ""
+    header = f"📚 課程提醒 {timing}\n━━━━━━━━━━━━\n" if timing else ""
+    text = (f"{header}{cat}📌 {row['title']}\n"
+            f"📅 {row['course_date']} {row.get('course_time','09:00')}")
+    if row.get("location"):    text += f"\n📍 {row['location']}"
+    if row.get("description"): text += f"\n📝 {row['description']}"
+    msgs: list = []
+    if row.get("image_url"):
+        msgs.append({"type":"image",
+                     "originalContentUrl": row["image_url"],
+                     "previewImageUrl":    row["image_url"]})
+    msgs.append({"type":"text","text":text})
+    return text, msgs
+
+def _fmt_course_list_line(r) -> str:
+    """
+    將課程 DB row 格式化成單行清單文字（用於 shortcut reply / postback 查詢結果）。
+    支援 category 欄位名稱為 'category' 或 'category_name'。
+    row 需包含: course_date, course_time, title;
+    可選: category / category_name, location, description（自動擷取 http 連結）。
+    """
+    cat  = ""
+    cat_val = r.get("category") or r.get("category_name") or ""
+    if cat_val:
+        cat = f"[{cat_val}] "
+    loc  = f"\n   📍 {r['location']}" if r.get("location") else ""
+    desc = r.get("description", "")
+    links = __import__("re").findall(r'https?://\S+', desc)
+    if links:
+        link_line = "\n   🔗 " + "\n   🔗 ".join(links[:2])
+    elif desc.strip():
+        link_line = f"\n   💬 {desc.strip()[:80]}"
+    else:
+        link_line = ""
+    return (f"📅 {r['course_date']} {r.get('course_time','')} {cat}{r['title']}"
+            f"{loc}{link_line}")
+
 def _load_keywords() -> dict[str, list[str]]:
     """從 DB 讀關鍵字設定，回傳 {key: [kw, ...]}，帶 TTL 快取。"""
     global _KW_CACHE, _KW_CACHE_TS
@@ -1001,13 +1050,9 @@ def check_and_send_reminders():
             cd = datetime.strptime(row["course_date"], "%Y-%m-%d").date()
             days_left = (cd - now.date()).days
             timing = "【今天上課】" if days_left == 0 else f"【還有 {days_left} 天】"
-            cat = f"[{row['category_name']}] " if row["category_name"] else ""
-            text = (f"📚 課程提醒 {timing}\n━━━━━━━━━━━━\n"
-                    f"{cat}📌 {row['title']}\n"
-                    f"📅 {row['course_date']} {row['course_time']}")
-            if row["location"]:    text += f"\n📍 {row['location']}"
-            if row["description"]: text += f"\n📝 {row['description']}"
-            msgs = []
+            _, msgs = _fmt_course_reminder(row, timing)
+            text = msgs[-1]["text"]
+            msgs = []  # 重建（image + text 順序在 push 前組裝）
             if row["image_url"]:
                 msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
             msgs.append({"type":"text","text":text})
@@ -1020,14 +1065,29 @@ def check_and_send_reminders():
 
 # ── 排程廣播（每 15 分鐘檢查） ──
 def check_scheduled_broadcasts():
-    now = now_tw()  # aware datetime，帶台灣時區
+    """
+    每 15 分鐘檢查一次廣播排程。
+
+    樂觀鎖保護（防止 rolling restart 重複發送）：
+      1. 用 FOR UPDATE SKIP LOCKED 確保同一筆記錄只有一個 worker 持鎖。
+      2. UPDATE next_run 時附加 AND next_run = <原始值> 的 WHERE 條件；
+         若其他 worker 已搶先更新，rowcount == 0 就跳過，避免重發。
+    """
+    now = now_tw()
     with db_conn() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT * FROM scheduled_broadcasts WHERE active=TRUE AND next_run <= %s", (now,))
+        # SKIP LOCKED：若另一個 worker 已持鎖（rolling restart 並發），直接略過
+        cur.execute("""
+            SELECT * FROM scheduled_broadcasts
+            WHERE active=TRUE AND next_run <= %s
+            FOR UPDATE SKIP LOCKED
+        """, (now,))
         rows = cur.fetchall()
         logger.info(f"[Broadcast] Checking at {now.isoformat()}, found {len(rows)} due")
 
         for row in rows:
+            original_next_run = row["next_run"]  # 用於樂觀鎖比對
+
             # 若設定了結束時間且已超過，自動停用
             if row.get("end_time"):
                 try:
@@ -1055,16 +1115,29 @@ def check_scheduled_broadcasts():
                     if end_dt.tzinfo is None:
                         end_dt = end_dt.replace(tzinfo=TZ)
                     if next_run >= end_dt:
-                        cur.execute("UPDATE scheduled_broadcasts SET next_run=%s, active=FALSE WHERE id=%s",
-                                    (next_run.isoformat(), row["id"]))
-                        logger.info(f"[Broadcast] '{row['title']}' last send done, deactivated")
+                        cur.execute("""
+                            UPDATE scheduled_broadcasts
+                            SET next_run=%s, active=FALSE
+                            WHERE id=%s AND next_run=%s
+                        """, (next_run.isoformat(), row["id"], original_next_run))
+                        if cur.rowcount:
+                            logger.info(f"[Broadcast] '{row['title']}' last send done, deactivated")
+                        else:
+                            logger.warning(f"[Broadcast] '{row['title']}' skip (already updated by another worker)")
                         continue
                 except Exception:
                     pass
 
-            cur.execute("UPDATE scheduled_broadcasts SET next_run=%s WHERE id=%s",
-                        (next_run.isoformat(), row["id"]))
-            logger.info(f"[Broadcast] '{row['title']}' sent {ok}/{total}, next_run={next_run.isoformat()}")
+            # 樂觀鎖：只有當 next_run 還是原始值時才更新（防止重複發送）
+            cur.execute("""
+                UPDATE scheduled_broadcasts
+                SET next_run=%s
+                WHERE id=%s AND next_run=%s
+            """, (next_run.isoformat(), row["id"], original_next_run))
+            if cur.rowcount:
+                logger.info(f"[Broadcast] '{row['title']}' sent {ok}/{total}, next_run={next_run.isoformat()}")
+            else:
+                logger.warning(f"[Broadcast] '{row['title']}' skip duplicate (next_run already advanced)")
 
         conn.commit()
 
@@ -1073,7 +1146,12 @@ def check_scheduled_announcements():
     now = now_tw()
     with db_conn() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT * FROM scheduled_announcements WHERE sent=FALSE AND send_at <= %s", (now,))
+        # SKIP LOCKED：防止 rolling restart 並發重複發送
+        cur.execute("""
+            SELECT * FROM scheduled_announcements
+            WHERE sent=FALSE AND send_at <= %s
+            FOR UPDATE SKIP LOCKED
+        """, (now,))
         rows = cur.fetchall()
         logger.info(f"[SchedAnn] Checking at {now.isoformat()}, found {len(rows)} due")
         for row in rows:
@@ -1082,11 +1160,15 @@ def check_scheduled_announcements():
                 msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
             msgs.append({"type":"text","text":row["content"]})
             ok, total, _errors = push_to_groups(msgs, bot_key=row.get("bot_key",""))
+            # 樂觀鎖：WHERE sent=FALSE 確保未被其他 worker 搶先標記
             cur.execute(
-                "UPDATE scheduled_announcements SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
+                "UPDATE scheduled_announcements SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s AND sent=FALSE",
                 (now_tw().isoformat(), total, row["id"])
             )
-            logger.info(f"[SchedAnn] id={row['id']} sent {ok}/{total}")
+            if cur.rowcount:
+                logger.info(f"[SchedAnn] id={row['id']} sent {ok}/{total}")
+            else:
+                logger.warning(f"[SchedAnn] id={row['id']} skip duplicate (already sent by another worker)")
         conn.commit()
 
 # 排程：固定台灣時間 08:00 + 每 15 分鐘廣播檢查 + 每 5 分鐘一次性公告
@@ -1102,7 +1184,12 @@ def check_broadcast_schedule_entries():
     now = now_tw()
     with db_conn() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT * FROM broadcast_schedule_entries WHERE sent=FALSE AND send_at <= %s", (now,))
+        # SKIP LOCKED：防止 rolling restart 並發重複發送
+        cur.execute("""
+            SELECT * FROM broadcast_schedule_entries
+            WHERE sent=FALSE AND send_at <= %s
+            FOR UPDATE SKIP LOCKED
+        """, (now,))
         rows = cur.fetchall()
         if rows:
             logger.info(f"[BcastEntry] {len(rows)} entries due at {now.isoformat()}")
@@ -1122,15 +1209,8 @@ def check_broadcast_schedule_entries():
                         cd = datetime.strptime(str(c["course_date"]), "%Y-%m-%d").date()
                         days_left = (cd - today_tw()).days
                         timing = "【今天上課】" if days_left==0 else f"【還有 {days_left} 天】" if days_left>0 else "【已結束】"
-                        cat = f"[{c['category_name']}] " if c["category_name"] else ""
-                        text = (f"📚 課程提醒 {timing}\n━━━━━━━━━━━━\n"
-                                f"{cat}📌 {c['title']}\n"
-                                f"📅 {c['course_date']} {c['course_time']}")
-                        if c["location"]:    text += f"\n📍 {c['location']}"
-                        if c["description"]: text += f"\n📝 {c['description']}"
-                        if c["image_url"]:
-                            msgs.append({"type":"image","originalContentUrl":c["image_url"],"previewImageUrl":c["image_url"]})
-                        msgs.append({"type":"text","text":text})
+                        _, c_msgs = _fmt_course_reminder(c, timing)
+                        msgs.extend(c_msgs)
                 elif src_type == "broadcast":
                     cur2 = conn.cursor()
                     cur2.execute("SELECT * FROM scheduled_broadcasts WHERE id=%s", (src_id,))
@@ -1144,10 +1224,13 @@ def check_broadcast_schedule_entries():
             if msgs:
                 ok, total, _errors = push_to_groups(msgs, bot_key=row.get("bot_key",""))
                 cur.execute(
-                    "UPDATE broadcast_schedule_entries SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
+                    "UPDATE broadcast_schedule_entries SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s AND sent=FALSE",
                     (now_tw().isoformat(), total, row["id"])
                 )
-                logger.info(f"[BcastEntry] id={row['id']} {src_type}#{src_id} sent {ok}/{total}")
+                if cur.rowcount:
+                    logger.info(f"[BcastEntry] id={row['id']} {src_type}#{src_id} sent {ok}/{total}")
+                else:
+                    logger.warning(f"[BcastEntry] id={row['id']} skip duplicate (already sent by another worker)")
         conn.commit()
 
 scheduler.add_job(check_broadcast_schedule_entries, "interval", minutes=5,
@@ -1168,20 +1251,34 @@ WANDER_MESSAGES = [
 ]
 
 # ── app_settings：輕量 key-value 持久化（tired_hour、wander_global 等）──
+# ── app_settings TTL 快取（避免每次請求都開 DB）──
+_SETTING_CACHE: dict[str, tuple[str, float]] = {}  # key → (value, timestamp)
+_SETTING_CACHE_TTL = 30   # 秒；後台改完最多 30 秒生效（比關鍵字快取更短）
+_SETTING_CACHE_LOCK = threading.Lock()
+
 def get_setting(key: str, default: str = "") -> str:
-    """從 DB 讀一個設定值；失敗時回傳 default。"""
+    """從 DB 讀一個設定值，帶 TTL 快取；失敗時回傳 default。"""
+    now_ts = time.time()
+    with _SETTING_CACHE_LOCK:
+        cached = _SETTING_CACHE.get(key)
+        if cached and now_ts - cached[1] < _SETTING_CACHE_TTL:
+            return cached[0]
+    # 快取 miss 或過期：從 DB 讀
     try:
         with db_conn() as conn:
             cur = conn.cursor()
             cur.execute("SELECT value FROM app_settings WHERE key=%s", (key,))
             row = cur.fetchone()
-        return row["value"] if row else default
+        value = row["value"] if row else default
+        with _SETTING_CACHE_LOCK:
+            _SETTING_CACHE[key] = (value, now_ts)
+        return value
     except Exception as e:
         logger.warning(f"[Settings] get_setting({key}) failed: {e}")
         return default
 
 def set_setting(key: str, value: str) -> None:
-    """寫入或更新一個設定值。"""
+    """寫入或更新一個設定值，並立刻讓快取失效。"""
     try:
         with db_conn() as conn:
             cur = conn.cursor()
@@ -1190,6 +1287,9 @@ def set_setting(key: str, value: str) -> None:
                 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
             """, (key, value, isonow()))
             conn.commit()
+        # 寫入成功後立刻讓快取失效，下次 get_setting 會從 DB 取最新值
+        with _SETTING_CACHE_LOCK:
+            _SETTING_CACHE.pop(key, None)
     except Exception as e:
         logger.warning(f"[Settings] set_setting({key}) failed: {e}")
 
@@ -1707,16 +1807,7 @@ def send_course_now(cid):
     cd = datetime.strptime(str(row["course_date"]), "%Y-%m-%d").date()
     days_left = (cd - today_tw()).days
     timing = "【今天】" if days_left==0 else f"【還有{days_left}天】" if days_left>0 else "【已結束】"
-    cat = f"[{row['category_name']}] " if row["category_name"] else ""
-    text = (f"📚 課程提醒 {timing}\n━━━━━━━━━━━━\n"
-            f"{cat}📌 {row['title']}\n"
-            f"📅 {row['course_date']} {row['course_time']}")
-    if row["location"]:    text += f"\n📍 {row['location']}"
-    if row["description"]: text += f"\n📝 {row['description']}"
-    msgs = []
-    if row["image_url"]:
-        msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
-    msgs.append({"type":"text","text":text})
+    _, msgs = _fmt_course_reminder(row, timing)
     d2 = request.json or {}
     bot_key = d2.get("bot_key","").strip()
     ok, total, errors = push_to_groups(msgs, bot_key=bot_key)
@@ -1915,12 +2006,8 @@ def send_broadcast_entry_now(eid):
             cd = datetime.strptime(str(c["course_date"]), "%Y-%m-%d").date()
             days_left = (cd - today_tw()).days
             timing = "【今天上課】" if days_left==0 else f"【還有 {days_left} 天】" if days_left>0 else "【已結束】"
-            cat = f"[{c['category_name']}] " if c["category_name"] else ""
-            text = (f"📚 課程提醒 {timing}\n━━━━━━━━━━━━\n{cat}📌 {c['title']}\n📅 {c['course_date']} {c['course_time']}")
-            if c["location"]:    text += f"\n📍 {c['location']}"
-            if c["description"]: text += f"\n📝 {c['description']}"
-            if c["image_url"]:   msgs.append({"type":"image","originalContentUrl":c["image_url"],"previewImageUrl":c["image_url"]})
-            msgs.append({"type":"text","text":text})
+            _, c_msgs = _fmt_course_reminder(c, timing)
+            msgs.extend(c_msgs)
     elif src_type == "broadcast":
         cur.execute("SELECT * FROM scheduled_broadcasts WHERE id=%s", (src_id,))
         b = cur.fetchone()
@@ -2626,20 +2713,7 @@ def _handle_mention_ai(
                             type_label = "、".join(dict.fromkeys(_specific_types))  # 去重
                             reply_lines.append(f"咕嚕咕嚕～\n我查了一下「{type_label[:20]}」相關的\n")
                             for r in rows:
-                                cat = f"[{r['category']}] " if r.get("category") else ""
-                                loc = f"\n   📍 {r['location']}" if r.get("location") else ""
-                                desc = r.get("description","")
-                                # 擷取描述中的連結（http 開頭）
-                                links = re.findall(r'https?://\S+', desc)
-                                link_line = ""
-                                if links:
-                                    link_line = "\n   🔗 " + "\n   🔗 ".join(links[:2])
-                                elif desc.strip():
-                                    link_line = f"\n   💬 {desc.strip()[:80]}"
-                                reply_lines.append(
-                                    f"📅 {r['course_date']} {r['course_time']} {cat}{r['title']}"
-                                    f"{loc}{link_line}"
-                                )
+                                reply_lines.append(_fmt_course_list_line(r))
                             reply_lines.append("\n咕嘟～這幾場記好哦")
                         else:
                             type_label = "、".join(dict.fromkeys(_specific_types))
@@ -2659,17 +2733,7 @@ def _handle_mention_ai(
                         if rows:
                             reply_lines.append("咕嚕咕嚕～\n近期的行程我整理一下\n")
                             for r in rows:
-                                cat = f"[{r['category']}] " if r.get("category") else ""
-                                loc = f"\n   📍 {r['location']}" if r.get("location") else ""
-                                desc = r.get("description","")
-                                links = re.findall(r'https?://\S+', desc)
-                                link_line = ""
-                                if links:
-                                    link_line = "\n   🔗 " + "\n   🔗 ".join(links[:2])
-                                reply_lines.append(
-                                    f"📅 {r['course_date']} {r['course_time']} {cat}{r['title']}"
-                                    f"{loc}{link_line}"
-                                )
+                                reply_lines.append(_fmt_course_list_line(r))
                             reply_lines.append("\n咕嘟～這幾場都記好哦")
                         else:
                             reply_lines.append("咕嚕～\n近期好像沒有排課\n咕…")
