@@ -85,18 +85,18 @@ def get_persona(bot_key: str = "main") -> dict:
         if cached and now_ts - cached["ts"] < PERSONA_CACHE_TTL:
             return cached["data"]
     try:
-        conn = get_db(); cur = conn.cursor()
-        cur.execute(
-            "SELECT * FROM bot_persona WHERE bot_key=%s AND active=TRUE LIMIT 1",
-            (bot_key,)
-        )
-        row = cur.fetchone()
-        if not row and bot_key != "main":
+        with db_conn() as conn:
+            cur = conn.cursor()
             cur.execute(
-                "SELECT * FROM bot_persona WHERE bot_key='main' AND active=TRUE LIMIT 1"
+                "SELECT * FROM bot_persona WHERE bot_key=%s AND active=TRUE LIMIT 1",
+                (bot_key,)
             )
             row = cur.fetchone()
-        cur.close(); conn.close()
+            if not row and bot_key != "main":
+                cur.execute(
+                    "SELECT * FROM bot_persona WHERE bot_key='main' AND active=TRUE LIMIT 1"
+                )
+                row = cur.fetchone()
     except Exception as e:
         logger.warning(f"[Persona] DB read error: {e}")
         row = None
@@ -614,15 +614,15 @@ def _ensure_db_ready():
 def get_chat_memory(user_id: str, group_id: str, limit: int = 3) -> list[dict]:
     """取得最近 N 輪對話（每輪 = user + assistant 各一則）"""
     try:
-        conn = get_db(); cur = conn.cursor()
-        cur.execute("""
-            SELECT role, content FROM chat_memory
-            WHERE user_id = %s AND group_id = %s
-            ORDER BY created_at DESC
-            LIMIT %s
-        """, (user_id, group_id, limit * 2))
-        rows = cur.fetchall()
-        cur.close(); conn.close()
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT role, content FROM chat_memory
+                WHERE user_id = %s AND group_id = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+            """, (user_id, group_id, limit * 2))
+            rows = cur.fetchall()
         return list(reversed([{"role": r["role"], "content": r["content"]} for r in rows]))
     except Exception as e:
         logger.warning(f"[Memory] get failed: {e}")
@@ -631,27 +631,27 @@ def get_chat_memory(user_id: str, group_id: str, limit: int = 3) -> list[dict]:
 def save_chat_memory(user_id: str, group_id: str, user_msg: str, assistant_msg: str):
     """儲存一輪對話，並自動清理超過 3 輪的舊記憶"""
     try:
-        conn = get_db(); cur = conn.cursor()
-        now = now_tw()
-        # assistant 時間戳比 user 晚 1 秒，確保 ORDER BY created_at DESC 排序穩定
-        now_user = now.isoformat()
-        now_asst = (now + timedelta(seconds=1)).isoformat()
-        cur.execute("""
-            INSERT INTO chat_memory (user_id, group_id, role, content, created_at)
-            VALUES (%s,%s,'user',%s,%s), (%s,%s,'assistant',%s,%s)
-        """, (user_id, group_id, user_msg, now_user,
-              user_id, group_id, assistant_msg, now_asst))
-        cur.execute("""
-            DELETE FROM chat_memory
-            WHERE user_id = %s AND group_id = %s
-              AND id NOT IN (
-                  SELECT id FROM chat_memory
-                  WHERE user_id = %s AND group_id = %s
-                  ORDER BY created_at DESC
-                  LIMIT 6
-              )
-        """, (user_id, group_id, user_id, group_id))
-        conn.commit(); cur.close(); conn.close()
+        with db_conn() as conn:
+            cur = conn.cursor()
+            now = now_tw()
+            now_user = now.isoformat()
+            now_asst = (now + timedelta(seconds=1)).isoformat()
+            cur.execute("""
+                INSERT INTO chat_memory (user_id, group_id, role, content, created_at)
+                VALUES (%s,%s,'user',%s,%s), (%s,%s,'assistant',%s,%s)
+            """, (user_id, group_id, user_msg, now_user,
+                  user_id, group_id, assistant_msg, now_asst))
+            cur.execute("""
+                DELETE FROM chat_memory
+                WHERE user_id = %s AND group_id = %s
+                  AND id NOT IN (
+                      SELECT id FROM chat_memory
+                      WHERE user_id = %s AND group_id = %s
+                      ORDER BY created_at DESC
+                      LIMIT 6
+                  )
+            """, (user_id, group_id, user_id, group_id))
+            conn.commit()
     except Exception as e:
         logger.warning(f"[Memory] save failed: {e}")
 
@@ -706,11 +706,8 @@ def push_to_groups(messages: list, bot_key: str = "") -> tuple[int, int, list[st
         bot_key = next(iter(BOTS), "")
     headers = get_bot_headers(bot_key)
     # 共用一條 DB 連線取群組清單，避免廣播時重複建立連線
-    conn = get_db()
-    try:
+    with db_conn() as conn:
         groups = get_all_group_ids(bot_key, conn=conn)
-    finally:
-        conn.close()
     ok = 0
     errors = []
     for gid in groups:
@@ -785,16 +782,16 @@ def get_qr_buttons() -> list[dict]:
     回傳 [{"id":1,"label":"會議","btn_type":"tag","tags":["會議","線上","會前會"]}, ...]
     """
     try:
-        conn = get_db(); cur = conn.cursor()
-        cur.execute("""
-            SELECT id, label, btn_type, tags
-            FROM quick_reply_buttons
-            WHERE active = TRUE
-            ORDER BY sort_order ASC, id ASC
-            LIMIT 13
-        """)
-        rows = cur.fetchall()
-        cur.close(); conn.close()
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id, label, btn_type, tags
+                FROM quick_reply_buttons
+                WHERE active = TRUE
+                ORDER BY sort_order ASC, id ASC
+                LIMIT 13
+            """)
+            rows = cur.fetchall()
         result = []
         for r in rows:
             tags = [t.strip() for t in r["tags"].split(",") if t.strip()] if r["tags"] else []
@@ -874,10 +871,10 @@ def generate_reminders(course_id: int, course_date_str: str,
     2. course_broadcast_cache（新快取表，預先組好訊息文字）
     """
     from datetime import time as dt_time
-    conn = get_db()
-    cur = conn.cursor()
+    with db_conn() as conn:
+        cur = conn.cursor()
 
-    # 取課程完整資料（用於組訊息）
+        # 取課程完整資料（用於組訊息）
     cur.execute("""
         SELECT c.*, cat.name AS category_name
         FROM courses c
@@ -934,8 +931,7 @@ def generate_reminders(course_id: int, course_date_str: str,
             """, (course_id, send_at.isoformat(), msg,
                   course.get("image_url", ""), _bot_key, isonow()))
 
-    conn.commit()
-    cur.close(); conn.close()
+        conn.commit()
     return [d.isoformat() for d in dates]
 
 # ── 每日 08:00 台灣時間觸發提醒 ──
@@ -947,9 +943,8 @@ def check_and_send_reminders():
     now  = now_tw()
     today = now.date().isoformat()
     logger.info(f"[Reminder] Checking cache reminders at {now.isoformat()}")
-    conn = get_db()
-    cur  = conn.cursor()
-    try:
+    with db_conn() as conn:
+        cur  = conn.cursor()
         # ── 主路徑：從快取表發送 ──
         cur.execute("""
             SELECT * FROM course_broadcast_cache
@@ -1022,15 +1017,12 @@ def check_and_send_reminders():
 
         conn.commit()
         logger.info(f"[Reminder] Done: {len(cache_rows)} cache + {len(legacy_rows)} legacy")
-    finally:
-        cur.close(); conn.close()
 
 # ── 排程廣播（每 15 分鐘檢查） ──
 def check_scheduled_broadcasts():
     now = now_tw()  # aware datetime，帶台灣時區
-    conn = get_db()
-    cur = conn.cursor()
-    try:
+    with db_conn() as conn:
+        cur = conn.cursor()
         cur.execute("SELECT * FROM scheduled_broadcasts WHERE active=TRUE AND next_run <= %s", (now,))
         rows = cur.fetchall()
         logger.info(f"[Broadcast] Checking at {now.isoformat()}, found {len(rows)} due")
@@ -1075,15 +1067,12 @@ def check_scheduled_broadcasts():
             logger.info(f"[Broadcast] '{row['title']}' sent {ok}/{total}, next_run={next_run.isoformat()}")
 
         conn.commit()
-    finally:
-        cur.close(); conn.close()
 
 # ── 一次性排程公告（每 5 分鐘檢查） ──
 def check_scheduled_announcements():
     now = now_tw()
-    conn = get_db()
-    cur = conn.cursor()
-    try:
+    with db_conn() as conn:
+        cur = conn.cursor()
         cur.execute("SELECT * FROM scheduled_announcements WHERE sent=FALSE AND send_at <= %s", (now,))
         rows = cur.fetchall()
         logger.info(f"[SchedAnn] Checking at {now.isoformat()}, found {len(rows)} due")
@@ -1099,8 +1088,6 @@ def check_scheduled_announcements():
             )
             logger.info(f"[SchedAnn] id={row['id']} sent {ok}/{total}")
         conn.commit()
-    finally:
-        cur.close(); conn.close()
 
 # 排程：固定台灣時間 08:00 + 每 15 分鐘廣播檢查 + 每 5 分鐘一次性公告
 scheduler.add_job(check_and_send_reminders, "cron", hour=8, minute=0,
@@ -1113,8 +1100,8 @@ scheduler.add_job(check_scheduled_announcements, "interval", minutes=5,
 # ── 指定日期時間發送排程（broadcast_schedule_entries）──
 def check_broadcast_schedule_entries():
     now = now_tw()
-    conn = get_db(); cur = conn.cursor()
-    try:
+    with db_conn() as conn:
+        cur = conn.cursor()
         cur.execute("SELECT * FROM broadcast_schedule_entries WHERE sent=FALSE AND send_at <= %s", (now,))
         rows = cur.fetchall()
         if rows:
@@ -1162,8 +1149,6 @@ def check_broadcast_schedule_entries():
                 )
                 logger.info(f"[BcastEntry] id={row['id']} {src_type}#{src_id} sent {ok}/{total}")
         conn.commit()
-    finally:
-        cur.close(); conn.close()
 
 scheduler.add_job(check_broadcast_schedule_entries, "interval", minutes=5,
                   id="bcast_entries", replace_existing=True)
@@ -1186,10 +1171,10 @@ WANDER_MESSAGES = [
 def get_setting(key: str, default: str = "") -> str:
     """從 DB 讀一個設定值；失敗時回傳 default。"""
     try:
-        conn = get_db(); cur = conn.cursor()
-        cur.execute("SELECT value FROM app_settings WHERE key=%s", (key,))
-        row = cur.fetchone()
-        cur.close(); conn.close()
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT value FROM app_settings WHERE key=%s", (key,))
+            row = cur.fetchone()
         return row["value"] if row else default
     except Exception as e:
         logger.warning(f"[Settings] get_setting({key}) failed: {e}")
@@ -1198,12 +1183,13 @@ def get_setting(key: str, default: str = "") -> str:
 def set_setting(key: str, value: str) -> None:
     """寫入或更新一個設定值。"""
     try:
-        conn = get_db(); cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO app_settings (key, value, updated_at) VALUES (%s, %s, %s)
-            ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
-        """, (key, value, isonow()))
-        conn.commit(); cur.close(); conn.close()
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO app_settings (key, value, updated_at) VALUES (%s, %s, %s)
+                ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
+            """, (key, value, isonow()))
+            conn.commit()
     except Exception as e:
         logger.warning(f"[Settings] set_setting({key}) failed: {e}")
 
@@ -1274,8 +1260,8 @@ def check_alpaca_wander():
     if get_setting("wander_global_enabled", "true").lower() != "true":
         return
     now = now_tw()
-    conn = get_db(); cur = conn.cursor()
-    try:
+    with db_conn() as conn:
+        cur = conn.cursor()
         cur.execute("""
             SELECT aw.group_id, aw.send_hour, aw.interval_days, aw.last_sent, g.bot_key
             FROM alpaca_wander aw
@@ -1308,8 +1294,6 @@ def check_alpaca_wander():
                 logger.info(f"[Wander] 發送到 {r['group_id']}: {msg[:20]!r}")
             except Exception as e:
                 logger.warning(f"[Wander] push failed {r['group_id']}: {e}")
-    finally:
-        cur.close(); conn.close()
 
 scheduler.add_job(check_alpaca_wander, "interval", minutes=60,
                   id="alpaca_wander", replace_existing=True)
@@ -1318,33 +1302,33 @@ scheduler.add_job(check_alpaca_wander, "interval", minutes=60,
 @app.route("/api/wander", methods=["GET"])
 def api_wander_list():
     if not check_admin(request): return jsonify({"error":"Unauthorized"}), 401
-    conn = get_db(); cur = conn.cursor()
+    with db_conn() as conn:
+        cur = conn.cursor()
 
-    # 自動把 groups 裡有、但 alpaca_wander 沒有的群組初始化進來（預設關閉）
-    cur.execute("""
-        INSERT INTO alpaca_wander (group_id, enabled, send_hour, interval_days, created_at)
-        SELECT g.group_id, FALSE, 14, 7, NOW()
-        FROM groups g
-        WHERE NOT EXISTS (
-            SELECT 1 FROM alpaca_wander aw WHERE aw.group_id = g.group_id
-        )
-    """)
-    conn.commit()
+        # 自動把 groups 裡有、但 alpaca_wander 沒有的群組初始化進來（預設關閉）
+        cur.execute("""
+            INSERT INTO alpaca_wander (group_id, enabled, send_hour, interval_days, created_at)
+            SELECT g.group_id, FALSE, 14, 7, NOW()
+            FROM groups g
+            WHERE NOT EXISTS (
+                SELECT 1 FROM alpaca_wander aw WHERE aw.group_id = g.group_id
+            )
+        """)
+        conn.commit()
 
-    cur.execute("""
-        SELECT aw.group_id, aw.enabled, aw.send_hour, aw.interval_days, aw.last_sent,
-               g.group_name
-        FROM alpaca_wander aw
-        LEFT JOIN groups g ON g.group_id = aw.group_id
-        ORDER BY COALESCE(g.group_name, aw.group_id)
-    """)
-    rows = cur.fetchall()
-    result = []
-    for r in rows:
-        d = dict(r)
-        if d.get("last_sent"): d["last_sent"] = str(d["last_sent"])
-        result.append(d)
-    cur.close(); conn.close()
+        cur.execute("""
+            SELECT aw.group_id, aw.enabled, aw.send_hour, aw.interval_days, aw.last_sent,
+                   g.group_name
+            FROM alpaca_wander aw
+            LEFT JOIN groups g ON g.group_id = aw.group_id
+            ORDER BY COALESCE(g.group_name, aw.group_id)
+        """)
+        rows = cur.fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            if d.get("last_sent"): d["last_sent"] = str(d["last_sent"])
+            result.append(d)
     return jsonify({
         "global_enabled": get_setting("wander_global_enabled", "true").lower() == "true",
         "groups": result
@@ -1362,29 +1346,31 @@ def api_wander_global():
 def api_wander_group(group_id):
     if not check_admin(request): return jsonify({"error":"Unauthorized"}), 401
     data = request.json or {}
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO alpaca_wander (group_id, enabled, send_hour, interval_days, created_at)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (group_id) DO UPDATE
-        SET enabled=%s, send_hour=%s, interval_days=%s
-    """, (group_id, data.get("enabled", False),
-          data.get("send_hour", 14), data.get("interval_days", 7), isonow(),
-          data.get("enabled", False), data.get("send_hour", 14), data.get("interval_days", 7)))
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO alpaca_wander (group_id, enabled, send_hour, interval_days, created_at)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (group_id) DO UPDATE
+            SET enabled=%s, send_hour=%s, interval_days=%s
+        """, (group_id, data.get("enabled", False),
+              data.get("send_hour", 14), data.get("interval_days", 7), isonow(),
+              data.get("enabled", False), data.get("send_hour", 14), data.get("interval_days", 7)))
+    conn.commit()
     return jsonify({"ok": True})
 
 @app.route("/api/wander/<group_id>/init", methods=["POST"])
 def api_wander_init(group_id):
     """將群組加入發呆排程（預設關閉）"""
     if not check_admin(request): return jsonify({"error":"Unauthorized"}), 401
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO alpaca_wander (group_id, enabled, send_hour, interval_days, created_at)
-        VALUES (%s, FALSE, 14, 7, %s)
-        ON CONFLICT (group_id) DO NOTHING
-    """, (group_id, isonow()))
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO alpaca_wander (group_id, enabled, send_hour, interval_days, created_at)
+            VALUES (%s, FALSE, 14, 7, %s)
+            ON CONFLICT (group_id) DO NOTHING
+        """, (group_id, isonow()))
+    conn.commit()
     return jsonify({"ok": True})
 
 # ── 疲累模式 API ──
@@ -1423,28 +1409,28 @@ def api_chat_logs():
     per_page = 20
     offset   = (page - 1) * per_page
 
-    conn = get_db(); cur = conn.cursor()
-    conditions = []
-    params = []
-    if group_id:
-        conditions.append("group_id = %s"); params.append(group_id)
-    if keyword:
-        conditions.append("(question ILIKE %s OR answer ILIKE %s)")
-        params += [f"%{keyword}%", f"%{keyword}%"]
+    with db_conn() as conn:
+        cur = conn.cursor()
+        conditions = []
+        params = []
+        if group_id:
+            conditions.append("group_id = %s"); params.append(group_id)
+        if keyword:
+            conditions.append("(question ILIKE %s OR answer ILIKE %s)")
+            params += [f"%{keyword}%", f"%{keyword}%"]
 
-    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-    cur.execute(f"SELECT COUNT(*) AS cnt FROM chat_logs {where}", params)
-    total = cur.fetchone()["cnt"]
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        cur.execute(f"SELECT COUNT(*) AS cnt FROM chat_logs {where}", params)
+        total = cur.fetchone()["cnt"]
 
-    cur.execute(f"""
-        SELECT id, group_id, group_name, user_id, question, answer,
-               created_at AT TIME ZONE 'Asia/Taipei' AS created_at
-        FROM chat_logs {where}
-        ORDER BY created_at DESC
-        LIMIT %s OFFSET %s
-    """, params + [per_page, offset])
-    rows = cur.fetchall()
-    cur.close(); conn.close()
+        cur.execute(f"""
+            SELECT id, group_id, group_name, user_id, question, answer,
+                   created_at AT TIME ZONE 'Asia/Taipei' AS created_at
+            FROM chat_logs {where}
+            ORDER BY created_at DESC
+            LIMIT %s OFFSET %s
+        """, params + [per_page, offset])
+        rows = cur.fetchall()
 
     return jsonify({
         "total": total,
@@ -1461,10 +1447,10 @@ def api_chat_stats():
     STOPWORDS = {"嗎","的","了","是","在","有","什麼","可以","嗎","我","你","他","她","這","那",
                  "不","也","都","就","要","會","嗯","喔","好","啊","哦","欸","怎","麼","嘿",
                  "咕嚕","咕","嗚","噗","請問","想","知道","謝謝","謝","對","沒","去","來"}
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT question FROM chat_logs ORDER BY created_at DESC LIMIT 2000")
-    rows = cur.fetchall()
-    cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT question FROM chat_logs ORDER BY created_at DESC LIMIT 2000")
+        rows = cur.fetchall()
 
     counter = Counter()
     for r in rows:
@@ -1484,7 +1470,11 @@ def api_chat_stats():
     return jsonify({"total_questions": len(rows), "keywords": top})
 
 def check_admin(req) -> bool:
-    return req.headers.get("X-Admin-Pass") == ADMIN_PASSWORD
+    token = req.headers.get("X-Admin-Pass", "")
+    # hmac.compare_digest 防止 timing attack（即使密碼長度不同也不短路）
+    if not token or not ADMIN_PASSWORD:
+        return False
+    return hmac.compare_digest(token, ADMIN_PASSWORD)
 
 # ── Static ──
 @app.route("/admin")
@@ -1544,9 +1534,9 @@ def get_bots():
 @app.route("/admin/groups")
 def get_groups():
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT group_id, joined_at, group_name, group_type, active, bot_key FROM groups ORDER BY joined_at DESC")
-    rows = cur.fetchall(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT group_id, joined_at, group_name, group_type, active, bot_key FROM groups ORDER BY joined_at DESC")
     result = []
     for r in rows:
         d = dict(r)
@@ -1558,7 +1548,6 @@ def get_groups():
 def update_group(gid):
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
     d = request.json or {}
-    conn = get_db(); cur = conn.cursor()
     fields, vals = [], []
     if "active" in d:
         fields.append("active=%s"); vals.append(bool(d["active"]))
@@ -1569,28 +1558,30 @@ def update_group(gid):
     if "bot_key" in d:
         fields.append("bot_key=%s"); vals.append(str(d["bot_key"]).strip())
     if not fields:
-        cur.close(); conn.close()
         return jsonify({"ok": False, "error": "no fields to update"})
     vals.append(gid)
-    cur.execute(f"UPDATE groups SET {', '.join(fields)} WHERE group_id=%s", vals)
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(f"UPDATE groups SET {', '.join(fields)} WHERE group_id=%s", vals)
+        conn.commit()
     return jsonify({"ok": True})
 
 @app.route("/admin/groups/<gid>", methods=["DELETE"])
 def delete_group(gid):
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("DELETE FROM groups WHERE group_id=%s", (gid,))
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM groups WHERE group_id=%s", (gid,))
+        conn.commit()
     return jsonify({"ok": True})
 
 @app.route("/admin/categories", methods=["GET"])
 def get_categories():
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT * FROM categories ORDER BY id")
-    rows = cur.fetchall()
-    cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM categories ORDER BY id")
+        rows = cur.fetchall()
     return jsonify({"categories": [dict(r) for r in rows]})
 
 @app.route("/admin/categories", methods=["POST"])
@@ -1600,10 +1591,11 @@ def add_category():
     name = d.get("name","").strip()
     if not name: return jsonify({"ok":False,"error":"請填寫分類名稱"})
     try:
-        conn = get_db(); cur = conn.cursor()
-        cur.execute("INSERT INTO categories (name,color,created_at) VALUES (%s,%s,%s)",
-                    (name, d.get("color","#06C755"), isonow()))
-        conn.commit(); cur.close(); conn.close()
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("INSERT INTO categories (name,color,created_at) VALUES (%s,%s,%s)",
+                        (name, d.get("color","#06C755"), isonow()))
+        conn.commit()
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"ok":False,"error":str(e)})
@@ -1611,28 +1603,29 @@ def add_category():
 @app.route("/admin/categories/<int:cid>", methods=["DELETE"])
 def delete_category(cid):
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("UPDATE courses SET category_id=NULL WHERE category_id=%s", (cid,))
-    cur.execute("DELETE FROM categories WHERE id=%s", (cid,))
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE courses SET category_id=NULL WHERE category_id=%s", (cid,))
+        cur.execute("DELETE FROM categories WHERE id=%s", (cid,))
+    conn.commit()
     return jsonify({"ok": True})
 
 @app.route("/admin/courses", methods=["GET"])
 def get_courses():
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("""
-        SELECT c.*, cat.name AS category_name, cat.color AS category_color,
-               COUNT(cr.id) AS remind_count,
-               SUM(CASE WHEN cr.sent THEN 1 ELSE 0 END) AS sent_count
-        FROM courses c
-        LEFT JOIN categories cat ON c.category_id = cat.id
-        LEFT JOIN course_reminders cr ON c.id = cr.course_id
-        GROUP BY c.id, cat.name, cat.color
-        ORDER BY c.course_date ASC
-    """)
-    rows = cur.fetchall()
-    cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT c.*, cat.name AS category_name, cat.color AS category_color,
+                   COUNT(cr.id) AS remind_count,
+                   SUM(CASE WHEN cr.sent THEN 1 ELSE 0 END) AS sent_count
+            FROM courses c
+            LEFT JOIN categories cat ON c.category_id = cat.id
+            LEFT JOIN course_reminders cr ON c.id = cr.course_id
+            GROUP BY c.id, cat.name, cat.color
+            ORDER BY c.course_date ASC
+        """)
+        rows = cur.fetchall()
     result = []
     for r in rows:
         d = dict(r)
@@ -1652,17 +1645,18 @@ def add_course():
     iv = int(d.get("remind_interval_value", 7))
     iu = d.get("remind_interval_unit", "days")
     bot_key = d.get("bot_key", "").strip()
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO courses
-          (category_id,title,course_date,course_time,location,description,image_url,
-           remind_value,remind_unit,remind_interval_value,remind_interval_unit,bot_key,created_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
-    """, (d.get("category_id"), title, course_date, d.get("course_time","09:00"),
-          d.get("location",""), d.get("description",""), d.get("image_url",""),
-          rv, ru, iv, iu, bot_key, isonow()))
-    cid = cur.fetchone()["id"]
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO courses
+              (category_id,title,course_date,course_time,location,description,image_url,
+               remind_value,remind_unit,remind_interval_value,remind_interval_unit,bot_key,created_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+        """, (d.get("category_id"), title, course_date, d.get("course_time","09:00"),
+              d.get("location",""), d.get("description",""), d.get("image_url",""),
+              rv, ru, iv, iu, bot_key, isonow()))
+        cid = cur.fetchone()["id"]
+    conn.commit()
     dates = generate_reminders(cid, course_date, rv, ru, iv, iu)
     return jsonify({"ok":True,"course_id":cid,"remind_count":len(dates)})
 
@@ -1678,35 +1672,37 @@ def edit_course(cid):
     iv = int(d.get("remind_interval_value",7))
     iu = d.get("remind_interval_unit","days")
     bot_key = d.get("bot_key","").strip()
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("""
-        UPDATE courses SET category_id=%s,title=%s,course_date=%s,course_time=%s,
-        location=%s,description=%s,image_url=%s,remind_value=%s,remind_unit=%s,
-        remind_interval_value=%s,remind_interval_unit=%s,bot_key=%s WHERE id=%s
-    """, (d.get("category_id"), title, course_date, d.get("course_time","09:00"),
-          d.get("location",""), d.get("description",""), d.get("image_url",""),
-          rv, ru, iv, iu, bot_key, cid))
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE courses SET category_id=%s,title=%s,course_date=%s,course_time=%s,
+            location=%s,description=%s,image_url=%s,remind_value=%s,remind_unit=%s,
+            remind_interval_value=%s,remind_interval_unit=%s,bot_key=%s WHERE id=%s
+        """, (d.get("category_id"), title, course_date, d.get("course_time","09:00"),
+              d.get("location",""), d.get("description",""), d.get("image_url",""),
+              rv, ru, iv, iu, bot_key, cid))
+    conn.commit()
     dates = generate_reminders(cid, course_date, rv, ru, iv, iu)
     return jsonify({"ok":True,"remind_count":len(dates)})
 
 @app.route("/admin/courses/<int:cid>", methods=["DELETE"])
 def delete_course(cid):
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("DELETE FROM courses WHERE id=%s", (cid,))
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM courses WHERE id=%s", (cid,))
+    conn.commit()
     return jsonify({"ok": True})
 
 @app.route("/admin/courses/<int:cid>/send-now", methods=["POST"])
 def send_course_now(cid):
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("""
-        SELECT c.*, cat.name AS category_name FROM courses c
-        LEFT JOIN categories cat ON c.category_id=cat.id WHERE c.id=%s
-    """, (cid,))
-    row = cur.fetchone(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT c.*, cat.name AS category_name FROM courses c
+            LEFT JOIN categories cat ON c.category_id=cat.id WHERE c.id=%s
+        """, (cid,))
     if not row: return jsonify({"ok":False,"error":"找不到課程"})
     cd = datetime.strptime(str(row["course_date"]), "%Y-%m-%d").date()
     days_left = (cd - today_tw()).days
@@ -1741,10 +1737,11 @@ def admin_send():
     if not msgs: return jsonify({"ok":0,"total":0})
     ok, total, errors = push_to_groups(msgs, bot_key=bot_key)
 
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("INSERT INTO announcements (content,sent_at,group_count) VALUES (%s,%s,%s)",
-                (text, isonow(), total))
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO announcements (content,sent_at,group_count) VALUES (%s,%s,%s)",
+                    (text, isonow(), total))
+    conn.commit()
     resp = {"ok":ok,"total":total}
     if errors: resp["errors"] = errors
     return jsonify(resp)
@@ -1752,9 +1749,9 @@ def admin_send():
 @app.route("/admin/scheduled-announcements", methods=["GET"])
 def get_scheduled_announcements():
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT * FROM scheduled_announcements ORDER BY send_at DESC LIMIT 50")
-    rows = cur.fetchall(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM scheduled_announcements ORDER BY send_at DESC LIMIT 50")
     result = []
     for r in rows:
         d = dict(r)
@@ -1779,37 +1776,39 @@ def add_scheduled_announcement():
     except Exception:
         return jsonify({"ok":False,"error":"時間格式錯誤"})
     bot_key = d.get("bot_key","").strip()
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO scheduled_announcements (title,content,image_url,send_at,sent,bot_key,created_at)
-        VALUES (%s,%s,%s,%s,FALSE,%s,%s)
-    """, (d.get("title","").strip(), content, d.get("image_url","").strip(), send_at.isoformat(), bot_key, isonow()))
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO scheduled_announcements (title,content,image_url,send_at,sent,bot_key,created_at)
+            VALUES (%s,%s,%s,%s,FALSE,%s,%s)
+        """, (d.get("title","").strip(), content, d.get("image_url","").strip(), send_at.isoformat(), bot_key, isonow()))
+    conn.commit()
     return jsonify({"ok": True})
 
 @app.route("/admin/scheduled-announcements/<int:aid>", methods=["DELETE"])
 def delete_scheduled_announcement(aid):
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("DELETE FROM scheduled_announcements WHERE id=%s AND sent=FALSE", (aid,))
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM scheduled_announcements WHERE id=%s AND sent=FALSE", (aid,))
+    conn.commit()
     return jsonify({"ok": True})
 
 @app.route("/admin/scheduled-announcements/<int:aid>/send-now", methods=["POST"])
 def send_scheduled_announcement_now(aid):
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT * FROM scheduled_announcements WHERE id=%s", (aid,))
-    row = cur.fetchone()
-    if not row: cur.close(); conn.close(); return jsonify({"ok":False,"error":"找不到公告"})
-    msgs = []
-    if row["image_url"]:
-        msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
-    msgs.append({"type":"text","text":row["content"]})
-    ok, total, _errors = push_to_groups(msgs, bot_key=row.get("bot_key",""))
-    cur.execute("UPDATE scheduled_announcements SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
-                (isonow(), total, aid))
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM scheduled_announcements WHERE id=%s", (aid,))
+        row = cur.fetchone()
+        msgs = []
+        if row["image_url"]:
+            msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
+        msgs.append({"type":"text","text":row["content"]})
+        ok, total, _errors = push_to_groups(msgs, bot_key=row.get("bot_key",""))
+        cur.execute("UPDATE scheduled_announcements SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
+                    (isonow(), total, aid))
+        conn.commit()
     return jsonify({"ok":ok,"total":total})
 
 # ── Broadcast Schedule Entries ──
@@ -1818,16 +1817,16 @@ def get_broadcast_entries():
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
     src_type = request.args.get("source_type","")
     src_id   = request.args.get("source_id","")
-    conn = get_db(); cur = conn.cursor()
-    q = "SELECT * FROM broadcast_schedule_entries"
-    params = []
-    conds = []
-    if src_type: conds.append("source_type=%s"); params.append(src_type)
-    if src_id:   conds.append("source_id=%s");   params.append(int(src_id))
-    if conds: q += " WHERE " + " AND ".join(conds)
-    q += " ORDER BY send_at ASC"
-    cur.execute(q, params)
-    rows = cur.fetchall(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        q = "SELECT * FROM broadcast_schedule_entries"
+        params = []
+        conds = []
+        if src_type: conds.append("source_type=%s"); params.append(src_type)
+        if src_id:   conds.append("source_id=%s");   params.append(int(src_id))
+        if conds: q += " WHERE " + " AND ".join(conds)
+        q += " ORDER BY send_at ASC"
+        cur.execute(q, params)
     result = []
     for r in rows:
         d = dict(r)
@@ -1846,24 +1845,25 @@ def add_broadcast_entries():
     send_ats = d.get("send_ats", [])   # list of ISO datetime strings
     if not src_type or not src_id or not send_ats:
         return jsonify({"ok":False,"error":"請填寫 source_type、source_id 及發送時間"})
-    conn = get_db(); cur = conn.cursor()
-    count = 0
-    for sa in send_ats:
-        try:
-            dt = datetime.fromisoformat(sa)
-            # 若為 naive datetime（前端送台灣本地時間），補上台灣時區
-            # 確保帶台灣時區（+08:00），讓 PostgreSQL 正確存 TIMESTAMPTZ
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=TZ)
-            cur.execute("""
-                INSERT INTO broadcast_schedule_entries
-                  (source_type, source_id, send_at, sent, created_at)
-                VALUES (%s,%s,%s::timestamptz,FALSE,%s)
-            """, (src_type, int(src_id), dt.isoformat(), isonow()))
-            count += 1
-        except Exception as e:
-            logger.warning(f"[BcastEntry] skip invalid send_at {sa}: {e}")
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        count = 0
+        for sa in send_ats:
+            try:
+                dt = datetime.fromisoformat(sa)
+                # 若為 naive datetime（前端送台灣本地時間），補上台灣時區
+                # 確保帶台灣時區（+08:00），讓 PostgreSQL 正確存 TIMESTAMPTZ
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=TZ)
+                cur.execute("""
+                    INSERT INTO broadcast_schedule_entries
+                      (source_type, source_id, send_at, sent, created_at)
+                    VALUES (%s,%s,%s::timestamptz,FALSE,%s)
+                """, (src_type, int(src_id), dt.isoformat(), isonow()))
+                count += 1
+            except Exception as e:
+                logger.warning(f"[BcastEntry] skip invalid send_at {sa}: {e}")
+    conn.commit()
     return jsonify({"ok": True, "added": count})
 
 @app.route("/admin/broadcast-entries/<int:eid>", methods=["PUT"])
@@ -1879,29 +1879,31 @@ def edit_broadcast_entry(eid):
             dt = dt.replace(tzinfo=TZ)
     except ValueError:
         return jsonify({"ok":False,"error":"時間格式錯誤，請使用 YYYY-MM-DDTHH:MM:SS"})
-    conn = get_db(); cur = conn.cursor()
-    cur.execute(
-        "UPDATE broadcast_schedule_entries SET send_at=%s WHERE id=%s AND sent=FALSE",
-        (dt.isoformat(), eid)
-    )
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE broadcast_schedule_entries SET send_at=%s WHERE id=%s AND sent=FALSE",
+            (dt.isoformat(), eid)
+        )
+    conn.commit()
     return jsonify({"ok": True})
 
 @app.route("/admin/broadcast-entries/<int:eid>", methods=["DELETE"])
 def delete_broadcast_entry(eid):
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("DELETE FROM broadcast_schedule_entries WHERE id=%s AND sent=FALSE", (eid,))
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM broadcast_schedule_entries WHERE id=%s AND sent=FALSE", (eid,))
+    conn.commit()
     return jsonify({"ok": True})
 
 @app.route("/admin/broadcast-entries/<int:eid>/send-now", methods=["POST"])
 def send_broadcast_entry_now(eid):
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT * FROM broadcast_schedule_entries WHERE id=%s", (eid,))
-    row = cur.fetchone()
-    if not row: cur.close(); conn.close(); return jsonify({"ok":False,"error":"找不到排程"})
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM broadcast_schedule_entries WHERE id=%s", (eid,))
+        row = cur.fetchone()
     # Reuse the same build-message logic
     src_type = row["source_type"]; src_id = row["source_id"]
     msgs = []
@@ -1925,11 +1927,11 @@ def send_broadcast_entry_now(eid):
         if b:
             if b["image_url"]: msgs.append({"type":"image","originalContentUrl":b["image_url"],"previewImageUrl":b["image_url"]})
             msgs.append({"type":"text","text":b["content"]})
-    if not msgs: cur.close(); conn.close(); return jsonify({"ok":False,"error":"無法組建訊息"})
-    ok, total, _errors = push_to_groups(msgs, bot_key=row.get("bot_key",""))
-    cur.execute("UPDATE broadcast_schedule_entries SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
-                (isonow(), total, eid))
-    conn.commit(); cur.close(); conn.close()
+        if not msgs: return jsonify({"ok":False,"error":"無法組建訊息"})
+        ok, total, _errors = push_to_groups(msgs, bot_key=row.get("bot_key",""))
+        cur.execute("UPDATE broadcast_schedule_entries SET sent=TRUE, sent_time=%s, group_count=%s WHERE id=%s",
+                    (isonow(), total, eid))
+        conn.commit()
     return jsonify({"ok":ok,"total":total})
 
 @app.route("/admin/upload-image", methods=["POST"])
@@ -1943,9 +1945,9 @@ def upload_image():
 @app.route("/admin/scheduled", methods=["GET"])
 def get_scheduled():
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT * FROM scheduled_broadcasts ORDER BY created_at DESC")
-    rows = cur.fetchall(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM scheduled_broadcasts ORDER BY created_at DESC")
     result = []
     for r in rows:
         d = dict(r)
@@ -1975,74 +1977,77 @@ def add_scheduled():
         end_time = datetime.fromisoformat(end_time_str).isoformat() if end_time_str else None
     except Exception:
         end_time = None
-    conn = get_db(); cur = conn.cursor()
-    bot_key = d.get("bot_key","").strip()
-    cur.execute("""
-        INSERT INTO scheduled_broadcasts (title,content,image_url,interval_seconds,next_run,end_time,active,bot_key,created_at)
-        VALUES (%s,%s,%s,%s,%s,%s,TRUE,%s,%s)
-    """, (title, content_text, d.get("image_url",""), interval_seconds, next_run, end_time, bot_key, isonow()))
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        bot_key = d.get("bot_key","").strip()
+        cur.execute("""
+            INSERT INTO scheduled_broadcasts (title,content,image_url,interval_seconds,next_run,end_time,active,bot_key,created_at)
+            VALUES (%s,%s,%s,%s,%s,%s,TRUE,%s,%s)
+        """, (title, content_text, d.get("image_url",""), interval_seconds, next_run, end_time, bot_key, isonow()))
+    conn.commit()
     return jsonify({"ok": True})
 
 @app.route("/admin/scheduled/<int:sid>", methods=["PUT"])
 def update_scheduled(sid):
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
     d = request.json
-    conn = get_db(); cur = conn.cursor()
-    if "active" in d:
-        cur.execute("UPDATE scheduled_broadcasts SET active=%s WHERE id=%s", (bool(d["active"]), sid))
-    else:
-        iv = float(d.get("interval_value",1))
-        iu = d.get("interval_unit","days")
-        bot_key = d.get("bot_key","").strip()
-        start_time = d.get("start_time","")
-        end_time_str = d.get("end_time","")
-        try:
-            next_run = datetime.fromisoformat(start_time).isoformat()
-        except Exception:
-            next_run = None
-        try:
-            end_time = datetime.fromisoformat(end_time_str).isoformat() if end_time_str else None
-        except Exception:
-            end_time = None
-        if next_run:
-            cur.execute("""
-                UPDATE scheduled_broadcasts
-                SET title=%s,content=%s,image_url=%s,interval_seconds=%s,bot_key=%s,next_run=%s,end_time=%s
-                WHERE id=%s
-            """, (d.get("title"), d.get("content"), d.get("image_url",""), unit_to_seconds(iv,iu), bot_key, next_run, end_time, sid))
+    with db_conn() as conn:
+        cur = conn.cursor()
+        if "active" in d:
+            cur.execute("UPDATE scheduled_broadcasts SET active=%s WHERE id=%s", (bool(d["active"]), sid))
         else:
-            cur.execute("""
-                UPDATE scheduled_broadcasts
-                SET title=%s,content=%s,image_url=%s,interval_seconds=%s,bot_key=%s,end_time=%s
-                WHERE id=%s
-            """, (d.get("title"), d.get("content"), d.get("image_url",""), unit_to_seconds(iv,iu), bot_key, end_time, sid))
-    conn.commit(); cur.close(); conn.close()
+            iv = float(d.get("interval_value",1))
+            iu = d.get("interval_unit","days")
+            bot_key = d.get("bot_key","").strip()
+            start_time = d.get("start_time","")
+            end_time_str = d.get("end_time","")
+            try:
+                next_run = datetime.fromisoformat(start_time).isoformat()
+            except Exception:
+                next_run = None
+            try:
+                end_time = datetime.fromisoformat(end_time_str).isoformat() if end_time_str else None
+            except Exception:
+                end_time = None
+            if next_run:
+                cur.execute("""
+                    UPDATE scheduled_broadcasts
+                    SET title=%s,content=%s,image_url=%s,interval_seconds=%s,bot_key=%s,next_run=%s,end_time=%s
+                    WHERE id=%s
+                """, (d.get("title"), d.get("content"), d.get("image_url",""), unit_to_seconds(iv,iu), bot_key, next_run, end_time, sid))
+            else:
+                cur.execute("""
+                    UPDATE scheduled_broadcasts
+                    SET title=%s,content=%s,image_url=%s,interval_seconds=%s,bot_key=%s,end_time=%s
+                    WHERE id=%s
+                """, (d.get("title"), d.get("content"), d.get("image_url",""), unit_to_seconds(iv,iu), bot_key, end_time, sid))
+    conn.commit()
     return jsonify({"ok": True})
 
 @app.route("/admin/scheduled/<int:sid>", methods=["DELETE"])
 def delete_scheduled(sid):
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("DELETE FROM scheduled_broadcasts WHERE id=%s", (sid,))
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM scheduled_broadcasts WHERE id=%s", (sid,))
+    conn.commit()
     return jsonify({"ok": True})
 
 @app.route("/admin/scheduled/<int:sid>/send-now", methods=["POST"])
 def send_scheduled_now(sid):
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT * FROM scheduled_broadcasts WHERE id=%s", (sid,))
-    row = cur.fetchone()
-    if not row: cur.close(); conn.close(); return jsonify({"ok":False,"error":"找不到排程"})
-    msgs = []
-    if row["image_url"]:
-        msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
-    msgs.append({"type":"text","text":row["content"]})
-    ok, total, _errors = push_to_groups(msgs, bot_key=row.get("bot_key",""))
-    next_run = (now_tw() + timedelta(seconds=row["interval_seconds"])).isoformat()
-    cur.execute("UPDATE scheduled_broadcasts SET next_run=%s WHERE id=%s", (next_run, sid))
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM scheduled_broadcasts WHERE id=%s", (sid,))
+        row = cur.fetchone()
+        msgs = []
+        if row["image_url"]:
+            msgs.append({"type":"image","originalContentUrl":row["image_url"],"previewImageUrl":row["image_url"]})
+        msgs.append({"type":"text","text":row["content"]})
+        ok, total, _errors = push_to_groups(msgs, bot_key=row.get("bot_key",""))
+        next_run = (now_tw() + timedelta(seconds=row["interval_seconds"])).isoformat()
+        cur.execute("UPDATE scheduled_broadcasts SET next_run=%s WHERE id=%s", (next_run, sid))
+        conn.commit()
     return jsonify({"ok":ok,"total":total})
 
 @app.route("/admin/ai-parse", methods=["POST"])
@@ -2161,33 +2166,34 @@ def ai_parse_multi():
         # 批次新增課程
         saved = []
         errors = []
-        conn = get_db(); cur = conn.cursor()
-        for c in courses:
-            try:
-                title       = str(c.get("title","")).strip()
-                course_date = str(c.get("course_date","")).replace("/","-").strip()
-                if not title or not course_date:
-                    errors.append(f"略過：{c}")
-                    continue
-                rv = int(c.get("remind_value", 30))
-                ru = c.get("remind_unit", "days")
-                iv = int(c.get("remind_interval_value", 7))
-                iu = c.get("remind_interval_unit", "days")
-                cur.execute("""
-                    INSERT INTO courses
-                      (category_id,title,course_date,course_time,location,description,image_url,
-                       remind_value,remind_unit,remind_interval_value,remind_interval_unit,created_at)
-                    VALUES (%s,%s,%s,%s,%s,%s,'',  %s,%s,%s,%s,%s) RETURNING id
-                """, (None, title, course_date, c.get("course_time","09:00"),
-                      c.get("location",""), c.get("description",""),
-                      rv, ru, iv, iu, isonow()))
-                cid = cur.fetchone()["id"]
-                dates = generate_reminders(cid, course_date, rv, ru, iv, iu)
-                saved.append({"id": cid, "title": title, "course_date": course_date,
-                              "remind_count": len(dates)})
-            except Exception as ce:
-                errors.append(f"{c.get('title','?')}：{str(ce)[:60]}")
-        conn.commit(); cur.close(); conn.close()
+        with db_conn() as conn:
+            cur = conn.cursor()
+            for c in courses:
+                try:
+                    title       = str(c.get("title","")).strip()
+                    course_date = str(c.get("course_date","")).replace("/","-").strip()
+                    if not title or not course_date:
+                        errors.append(f"略過：{c}")
+                        continue
+                    rv = int(c.get("remind_value", 30))
+                    ru = c.get("remind_unit", "days")
+                    iv = int(c.get("remind_interval_value", 7))
+                    iu = c.get("remind_interval_unit", "days")
+                    cur.execute("""
+                        INSERT INTO courses
+                          (category_id,title,course_date,course_time,location,description,image_url,
+                           remind_value,remind_unit,remind_interval_value,remind_interval_unit,created_at)
+                        VALUES (%s,%s,%s,%s,%s,%s,'',  %s,%s,%s,%s,%s) RETURNING id
+                    """, (None, title, course_date, c.get("course_time","09:00"),
+                          c.get("location",""), c.get("description",""),
+                          rv, ru, iv, iu, isonow()))
+                    cid = cur.fetchone()["id"]
+                    dates = generate_reminders(cid, course_date, rv, ru, iv, iu)
+                    saved.append({"id": cid, "title": title, "course_date": course_date,
+                                  "remind_count": len(dates)})
+                except Exception as ce:
+                    errors.append(f"{c.get('title','?')}：{str(ce)[:60]}")
+        conn.commit()
 
         return jsonify({"ok": True, "saved": saved, "errors": errors,
                         "total": len(courses), "saved_count": len(saved)})
@@ -2296,44 +2302,44 @@ def ai_parse_multi_v2():
 
         saved  = []
         errors = []
-        conn = get_db(); cur = conn.cursor()
-        for c in courses:
-            try:
-                title       = str(c.get("title","")).strip()
-                course_date = str(c.get("course_date","")).replace("/","-").strip()
-                if not title or not course_date:
-                    errors.append(f"略過（缺標題或日期）：{c}"); continue
+        with db_conn() as conn:
+            cur = conn.cursor()
+            for c in courses:
+                try:
+                    title       = str(c.get("title","")).strip()
+                    course_date = str(c.get("course_date","")).replace("/","-").strip()
+                    if not title or not course_date:
+                        errors.append(f"略過（缺標題或日期）：{c}"); continue
 
-                rv = int(c.get("remind_value", 30))
-                ru = str(c.get("remind_unit", "days"))
-                iv = int(c.get("remind_interval_value", 7))
-                iu = str(c.get("remind_interval_unit", "days"))
+                    rv = int(c.get("remind_value", 30))
+                    ru = str(c.get("remind_unit", "days"))
+                    iv = int(c.get("remind_interval_value", 7))
+                    iu = str(c.get("remind_interval_unit", "days"))
 
-                cur.execute("""
-                    INSERT INTO courses
-                      (category_id,title,course_date,course_time,location,description,image_url,
-                       remind_value,remind_unit,remind_interval_value,remind_interval_unit,bot_key,created_at)
-                    VALUES (%s,%s,%s,%s,%s,%s,'',%s,%s,%s,%s,'',%s) RETURNING id
-                """, (None, title, course_date,
-                      str(c.get("course_time","09:00")),
-                      str(c.get("location","")),
-                      str(c.get("description","")),
-                      rv, ru, iv, iu, isonow()))
-                cid = cur.fetchone()["id"]
-                conn.commit()  # commit before generate_reminders (which opens its own conn)
-                dates = generate_reminders(cid, course_date, rv, ru, iv, iu)
-                saved.append({
-                    "id": cid, "title": title, "course_date": course_date,
-                    "location": c.get("location",""),
-                    "description": c.get("description",""),
-                    "remind_value": rv, "remind_unit": ru,
-                    "remind_interval_value": iv, "remind_interval_unit": iu,
-                    "remind_count": len(dates),
-                    "remind_dates": dates[:5],   # 前5個，供前端預覽
-                })
-            except Exception as ce:
-                errors.append(f"{c.get('title','?')}: {str(ce)[:80]}")
-        cur.close(); conn.close()
+                    cur.execute("""
+                        INSERT INTO courses
+                          (category_id,title,course_date,course_time,location,description,image_url,
+                           remind_value,remind_unit,remind_interval_value,remind_interval_unit,bot_key,created_at)
+                        VALUES (%s,%s,%s,%s,%s,%s,'',%s,%s,%s,%s,'',%s) RETURNING id
+                    """, (None, title, course_date,
+                          str(c.get("course_time","09:00")),
+                          str(c.get("location","")),
+                          str(c.get("description","")),
+                          rv, ru, iv, iu, isonow()))
+                    cid = cur.fetchone()["id"]
+                    conn.commit()  # commit before generate_reminders (which opens its own conn)
+                    dates = generate_reminders(cid, course_date, rv, ru, iv, iu)
+                    saved.append({
+                        "id": cid, "title": title, "course_date": course_date,
+                        "location": c.get("location",""),
+                        "description": c.get("description",""),
+                        "remind_value": rv, "remind_unit": ru,
+                        "remind_interval_value": iv, "remind_interval_unit": iu,
+                        "remind_count": len(dates),
+                        "remind_dates": dates[:5],   # 前5個，供前端預覽
+                    })
+                except Exception as ce:
+                    errors.append(f"{c.get('title','?')}: {str(ce)[:80]}")
 
         return jsonify({
             "ok": True,
@@ -2352,22 +2358,22 @@ def get_course_broadcast_cache():
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
     course_id = request.args.get("course_id")
     status    = request.args.get("status","")
-    conn = get_db(); cur = conn.cursor()
-    conds = []; params = []
-    if course_id:
-        conds.append("cbc.course_id=%s"); params.append(int(course_id))
-    if status:
-        conds.append("cbc.status=%s"); params.append(status)
-    where = ("WHERE " + " AND ".join(conds)) if conds else ""
-    cur.execute(f"""
-        SELECT cbc.*, c.title AS course_title
-        FROM course_broadcast_cache cbc
-        LEFT JOIN courses c ON c.id = cbc.course_id
-        {where}
-        ORDER BY cbc.send_at ASC LIMIT 200
-    """, params)
-    rows = cur.fetchall()
-    cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        conds = []; params = []
+        if course_id:
+            conds.append("cbc.course_id=%s"); params.append(int(course_id))
+        if status:
+            conds.append("cbc.status=%s"); params.append(status)
+        where = ("WHERE " + " AND ".join(conds)) if conds else ""
+        cur.execute(f"""
+            SELECT cbc.*, c.title AS course_title
+            FROM course_broadcast_cache cbc
+            LEFT JOIN courses c ON c.id = cbc.course_id
+            {where}
+            ORDER BY cbc.send_at ASC LIMIT 200
+        """, params)
+        rows = cur.fetchall()
     result = []
     for r in rows:
         d = dict(r)
@@ -2457,13 +2463,13 @@ def trigger_reminders():
     check_scheduled_announcements()
     check_broadcast_schedule_entries()
     # 回傳目前待發的 broadcast entries 數量，方便除錯
-    conn = get_db(); cur = conn.cursor()
-    now = now_tw()
-    cur.execute("SELECT COUNT(*) as total FROM broadcast_schedule_entries WHERE sent=FALSE")
-    pending_total = cur.fetchone()["total"]
-    cur.execute("SELECT COUNT(*) as due FROM broadcast_schedule_entries WHERE sent=FALSE AND send_at <= %s", (now,))
-    pending_due = cur.fetchone()["due"]
-    cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        now = now_tw()
+        cur.execute("SELECT COUNT(*) as total FROM broadcast_schedule_entries WHERE sent=FALSE")
+        pending_total = cur.fetchone()["total"]
+        cur.execute("SELECT COUNT(*) as due FROM broadcast_schedule_entries WHERE sent=FALSE AND send_at <= %s", (now,))
+        pending_due = cur.fetchone()["due"]
     return jsonify({
         "ok": True,
         "tw_time": now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -2476,133 +2482,132 @@ def trigger_reminders():
 def sync_group_names():
     """一鍵同步所有群組名稱（呼叫 LINE API）"""
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT group_id, bot_key FROM groups")
-    rows = cur.fetchall()
-    updated = 0
-    for row in rows:
-        gid     = row["group_id"]
-        bot_key = row.get("bot_key", "") or ""
-        name = fetch_group_name(gid, bot_key)
-        if name:
-            cur.execute("UPDATE groups SET group_name=%s WHERE group_id=%s", (name, gid))
-            updated += 1
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT group_id, bot_key FROM groups")
+        rows = cur.fetchall()
+        updated = 0
+        for row in rows:
+            gid     = row["group_id"]
+            bot_key = row.get("bot_key", "") or ""
+            name = fetch_group_name(gid, bot_key)
+            if name:
+                cur.execute("UPDATE groups SET group_name=%s WHERE group_id=%s", (name, gid))
+                updated += 1
+    conn.commit()
     return jsonify({"ok": True, "total": len(rows), "updated": updated})
 
 @app.route("/admin/groups/<gid>/sync-name", methods=["POST"])
 def sync_one_group_name(gid):
     """同步單一群組名稱"""
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT bot_key FROM groups WHERE group_id=%s", (gid,))
-    row = cur.fetchone()
-    bot_key = (row["bot_key"] or "") if row else ""
-    name = fetch_group_name(gid, bot_key)
-    if not name:
-        cur.close(); conn.close()
-        return jsonify({"ok": False, "error": "無法取得群組名稱（機器人可能已離開該群組）"})
-    cur.execute("UPDATE groups SET group_name=%s WHERE group_id=%s", (name, gid))
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT bot_key FROM groups WHERE group_id=%s", (gid,))
+        row = cur.fetchone()
+        bot_key = (row["bot_key"] or "") if row else ""
+        name = fetch_group_name(gid, bot_key)
+        if not name:
+            return jsonify({"ok": False, "error": "無法取得群組名稱（機器人可能已離開該群組）"})
+        cur.execute("UPDATE groups SET group_name=%s WHERE group_id=%s", (name, gid))
+        conn.commit()
     return jsonify({"ok": True, "group_name": name})
 
 # ── Webhook ──
-def handle_text(event, bot_key: str = ""):
-    user_id = event["source"].get("userId","")
-    reply_token = event["replyToken"]
-    msg_obj = event["message"]
-    text = msg_obj["text"].strip()
-
-    if event["source"]["type"] == "group":
-        gid = event["source"]["groupId"]
-        conn = get_db()
+def _handle_group_upsert(gid: str, bot_key: str) -> None:
+    """群組首次加入或名稱更新時，同步寫入 DB。"""
+    with db_conn() as conn:
         cur = conn.cursor()
-        try:
-            # 若群組已存在且有名稱則不重複呼叫 LINE API
-            cur.execute("SELECT group_name FROM groups WHERE group_id=%s", (gid,))
-            row = cur.fetchone()
-            if row is None:
-                headers = get_bot_headers(bot_key) if bot_key else HEADERS
-                try:
-                    r = requests.get(f"https://api.line.me/v2/bot/group/{gid}/summary",
-                                     headers=headers, timeout=8)
-                    group_name = r.json().get("groupName","") if r.status_code==200 else ""
-                except Exception:
-                    group_name = ""
-                cur.execute("""
-                    INSERT INTO groups (group_id, joined_at, group_name, bot_key)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (group_id) DO UPDATE SET group_name = EXCLUDED.group_name, bot_key = EXCLUDED.bot_key
-                """, (gid, isonow(), group_name, bot_key))
-                # 自動為新群組建立發呆排程設定（預設關閉）
-                cur.execute("""
-                    INSERT INTO alpaca_wander (group_id, enabled, send_hour, interval_days, created_at)
-                    VALUES (%s, FALSE, 14, 7, %s)
-                    ON CONFLICT (group_id) DO NOTHING
-                """, (gid, isonow()))
-            elif not row["group_name"]:
-                group_name = fetch_group_name(gid, bot_key)
-                cur.execute("UPDATE groups SET group_name=%s WHERE group_id=%s", (group_name, gid))
-            conn.commit()
-        finally:
-            cur.close(); conn.close()
+        # 若群組已存在且有名稱則不重複呼叫 LINE API
+        cur.execute("SELECT group_name FROM groups WHERE group_id=%s", (gid,))
+        row = cur.fetchone()
+        if row is None:
+            headers = get_bot_headers(bot_key) if bot_key else HEADERS
+            try:
+                r = requests.get(f"https://api.line.me/v2/bot/group/{gid}/summary",
+                                 headers=headers, timeout=8)
+                group_name = r.json().get("groupName","") if r.status_code==200 else ""
+            except Exception:
+                group_name = ""
+            cur.execute("""
+                INSERT INTO groups (group_id, joined_at, group_name, bot_key)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (group_id) DO UPDATE SET group_name = EXCLUDED.group_name, bot_key = EXCLUDED.bot_key
+            """, (gid, isonow(), group_name, bot_key))
+            # 自動為新群組建立發呆排程設定（預設關閉）
+            cur.execute("""
+                INSERT INTO alpaca_wander (group_id, enabled, send_hour, interval_days, created_at)
+                VALUES (%s, FALSE, 14, 7, %s)
+                ON CONFLICT (group_id) DO NOTHING
+            """, (gid, isonow()))
+        elif not row["group_name"]:
+            group_name = fetch_group_name(gid, bot_key)
+            cur.execute("UPDATE groups SET group_name=%s WHERE group_id=%s", (group_name, gid))
+        conn.commit()
 
-        # ── 偵測觸發條件：@mention 或 quote reply ──
-        mentionees = msg_obj.get("mention", {}).get("mentionees", [])
-        is_mentioned = any(m.get("type") == "user" and m.get("isSelf") for m in mentionees)
-        is_quote_reply = bool(msg_obj.get("quotedMessageId"))
 
-        if is_mentioned or is_quote_reply:
-            # ── 冷卻機制：同一用戶 30 秒內只能觸發一次 ──
-            if check_cooldown(user_id):
-                logger.info(f"[Cooldown] user={user_id} 冷卻中，略過")
-                return
-            # 將訊息中所有 @機器人 的片段移除，取得純問題文字
-            clean_text = text
-            if is_mentioned:
-                for m in sorted(mentionees, key=lambda x: x.get("index", 0), reverse=True):
-                    if m.get("isSelf"):
-                        s, l = m.get("index", 0), m.get("length", 0)
-                        clean_text = (clean_text[:s] + clean_text[s + l:]).strip()
 
-            if not clean_text:
-                reply_with_postback_menu(
-                    reply_token,
-                    "咕嚕～？\n叫我有什麼事嗎\n想查什麼直接選就好 👇",
-                    bot_key=bot_key
-                )
-                return
+def _handle_mention_ai(
+    event, msg_obj, user_id: str, reply_token: str,
+    text: str, gid: str, bot_key: str
+) -> None:
+    """處理 @mention 或 quote reply，執行關鍵字快捷查詢或呼叫 Gemini AI。"""
+    # ── 偵測觸發條件：@mention 或 quote reply ──
+    mentionees = msg_obj.get("mention", {}).get("mentionees", [])
+    is_mentioned = any(m.get("type") == "user" and m.get("isSelf") for m in mentionees)
+    is_quote_reply = bool(msg_obj.get("quotedMessageId"))
 
-            # ── 疲累模式：不呼叫 Gemini，只回短句 ──
-            if is_tired_mode():
-                logger.info(f"[Tired] user={user_id} 疲累模式中，略過 Gemini")
-                reply_message(reply_token, get_tired_message(), bot_key=bot_key)
-                return
+    if is_mentioned or is_quote_reply:
+        # ── 冷卻機制：同一用戶 30 秒內只能觸發一次 ──
+        if check_cooldown(user_id):
+            logger.info(f"[Cooldown] user={user_id} 冷卻中，略過")
+            return
+        # 將訊息中所有 @機器人 的片段移除，取得純問題文字
+        clean_text = text
+        if is_mentioned:
+            for m in sorted(mentionees, key=lambda x: x.get("index", 0), reverse=True):
+                if m.get("isSelf"):
+                    s, l = m.get("index", 0), m.get("length", 0)
+                    clean_text = (clean_text[:s] + clean_text[s + l:]).strip()
 
-            # ── 關鍵字快捷回覆（不消耗 Gemini token）──
-            _kw = _load_keywords()   # 從快取讀，幾乎無成本
-            is_course_query    = any(kw in clean_text for kw in _kw["kw_course"])
-            is_broadcast_query = any(kw in clean_text for kw in _kw["kw_broadcast"])
-            # 精確活動類型（取聯集後做 ILIKE 過濾）
-            _specific_types = []
-            if any(kw in clean_text for kw in _kw["kw_meeting"]):
-                _specific_types += ["會議", "線上", "會前會"]
-            if any(kw in clean_text for kw in _kw["kw_recruitment"]):
-                _specific_types += ["招商", "說明會"]
-            if any(kw in clean_text for kw in _kw["kw_training"]):
-                _specific_types += ["內訓", "教練", "培訓", "工作坊", "系統"]
-            is_specific_query = bool(_specific_types)
+        if not clean_text:
+            reply_with_postback_menu(
+                reply_token,
+                "咕嚕～？\n叫我有什麼事嗎\n想查什麼直接選就好 👇",
+                bot_key=bot_key
+            )
+            return
 
-            if is_course_query or is_broadcast_query or is_specific_query:
-                logger.info(f"[Shortcut Reply] keyword matched: {clean_text[:40]!r}")
-                try:
-                    now = now_tw()
-                    today = now.date().isoformat()
-                    _conn = get_db(); _cur = _conn.cursor()
+        # ── 疲累模式：不呼叫 Gemini，只回短句 ──
+        if is_tired_mode():
+            logger.info(f"[Tired] user={user_id} 疲累模式中，略過 Gemini")
+            reply_message(reply_token, get_tired_message(), bot_key=bot_key)
+            return
 
-                    reply_lines = []
+        # ── 關鍵字快捷回覆（不消耗 Gemini token）──
+        _kw = _load_keywords()   # 從快取讀，幾乎無成本
+        is_course_query    = any(kw in clean_text for kw in _kw["kw_course"])
+        is_broadcast_query = any(kw in clean_text for kw in _kw["kw_broadcast"])
+        # 精確活動類型（取聯集後做 ILIKE 過濾）
+        _specific_types = []
+        if any(kw in clean_text for kw in _kw["kw_meeting"]):
+            _specific_types += ["會議", "線上", "會前會"]
+        if any(kw in clean_text for kw in _kw["kw_recruitment"]):
+            _specific_types += ["招商", "說明會"]
+        if any(kw in clean_text for kw in _kw["kw_training"]):
+            _specific_types += ["內訓", "教練", "培訓", "工作坊", "系統"]
+        is_specific_query = bool(_specific_types)
 
-                    # ── 精確活動類型查詢（會議 / 招商 / 內訓）──
+        if is_course_query or is_broadcast_query or is_specific_query:
+            logger.info(f"[Shortcut Reply] keyword matched: {clean_text[:40]!r}")
+            try:
+                now = now_tw()
+                today = now.date().isoformat()
+                reply_lines = []
+                with db_conn() as _conn:
+                    _cur = _conn.cursor()
+
+                        # ── 精確活動類型查詢（會議 / 招商 / 內訓）──
                     if is_specific_query:
                         # 組 ILIKE 條件
                         like_clauses = " OR ".join(["c.title ILIKE %s OR c.description ILIKE %s"] * len(_specific_types))
@@ -2696,36 +2701,36 @@ def handle_text(event, bot_key: str = ""):
                     if not reply_lines:
                         reply_lines.append("咕嚕～\n查了一下沒找到相關資料\n咕…")
 
-                    _cur.close(); _conn.close()
-
-                    shortcut_msg = "\n".join(reply_lines)
-                    # 查詢結果下方附 postback 延伸選單
-                    reply_with_postback_menu(reply_token, shortcut_msg, bot_key=bot_key)
-                    # 快捷回覆也寫入 chat_logs
-                    try:
-                        _lconn = get_db(); _lcur = _lconn.cursor()
+                shortcut_msg = "\n".join(reply_lines)
+                # 查詢結果下方附 postback 延伸選單
+                reply_with_postback_menu(reply_token, shortcut_msg, bot_key=bot_key)
+                # 快捷回覆也寫入 chat_logs
+                try:
+                    with db_conn() as _lconn:
+                        _lcur = _lconn.cursor()
                         _lcur.execute("""
                             INSERT INTO chat_logs (group_id, group_name, user_id, question, answer, created_at)
                             VALUES (%s, (SELECT group_name FROM groups WHERE group_id=%s), %s, %s, %s, %s)
                         """, (gid, gid, user_id, clean_text, shortcut_msg, isonow()))
-                        _lconn.commit(); _lcur.close(); _lconn.close()
-                    except Exception as _le:
-                        logger.warning(f"[ChatLog-Shortcut] write failed: {_le}")
-                    return
+                        _lconn.commit()
+                except Exception as _le:
+                    logger.warning(f"[ChatLog-Shortcut] write failed: {_le}")
+                return
 
-                except Exception as e:
-                    logger.warning(f"[Shortcut Reply] failed, fallback to Gemini: {e}")
-                    # 查詢失敗就 fallback 給 Gemini 處理，不中斷
+            except Exception as e:
+                logger.warning(f"[Shortcut Reply] failed, fallback to Gemini: {e}")
+                # 查詢失敗就 fallback 給 Gemini 處理，不中斷
 
-            logger.info(f"[AI Mention] user={user_id} question={clean_text[:50]!r}")
+        logger.info(f"[AI Mention] user={user_id} question={clean_text[:50]!r}")
+        try:
+            now = now_tw()
+            today = now.date().isoformat()
+            current_hour = now.hour
+
+            # ── 從資料庫撈課程、廣播、公告作為 AI 背景知識（改法 C：補上公告兩張表）──
             try:
-                now = now_tw()
-                today = now.date().isoformat()
-                current_hour = now.hour
-
-                # ── 從資料庫撈課程、廣播、公告作為 AI 背景知識（改法 C：補上公告兩張表）──
-                try:
-                    _conn = get_db(); _cur = _conn.cursor()
+                with db_conn() as _conn:
+                    _cur = _conn.cursor()
 
                     # 1. 未來 60 天內的課程
                     _cur.execute("""
@@ -2768,142 +2773,140 @@ def handle_text(event, bot_key: str = ""):
                         LIMIT 5
                     """, ((now - timedelta(days=7)).isoformat(),))
                     recent_ann_rows = _cur.fetchall()
+            except Exception as db_err:
+                logger.warning(f"[AI Mention] DB context fetch failed: {db_err}")
+                course_rows = broadcast_rows = scheduled_ann_rows = recent_ann_rows = []
 
-                    _cur.close(); _conn.close()
-                except Exception as db_err:
-                    logger.warning(f"[AI Mention] DB context fetch failed: {db_err}")
-                    course_rows = broadcast_rows = scheduled_ann_rows = recent_ann_rows = []
+            # ── 格式化背景資料 ──
+            context_parts = []
+            if course_rows:
+                lines = ["【課程清單（未來60天）】"]
+                for r in course_rows:
+                    cat  = f"[{r['category']}] " if r.get("category") else ""
+                    loc  = f" / 地點：{r['location']}" if r.get("location") else ""
+                    desc = f" / 說明：{r['description']}" if r.get("description") else ""
+                    lines.append(f"- {r['course_date']} {r['course_time']} {cat}{r['title']}{loc}{desc}")
+                context_parts.append("\n".join(lines))
 
-                # ── 格式化背景資料 ──
-                context_parts = []
-                if course_rows:
-                    lines = ["【課程清單（未來60天）】"]
-                    for r in course_rows:
-                        cat  = f"[{r['category']}] " if r.get("category") else ""
-                        loc  = f" / 地點：{r['location']}" if r.get("location") else ""
-                        desc = f" / 說明：{r['description']}" if r.get("description") else ""
-                        lines.append(f"- {r['course_date']} {r['course_time']} {cat}{r['title']}{loc}{desc}")
-                    context_parts.append("\n".join(lines))
+            if broadcast_rows:
+                lines = ["【定期廣播（啟用中）】"]
+                for r in broadcast_rows:
+                    next_run = str(r["next_run"])[:16] if r.get("next_run") else "未知"
+                    end_time = f" 至 {str(r['end_time'])[:16]}" if r.get("end_time") else ""
+                    lines.append(f"- 【{r['title']}】下次發送：{next_run}{end_time}")
+                    lines.append(f"  內容：{str(r['content'])[:80]}")
+                context_parts.append("\n".join(lines))
 
-                if broadcast_rows:
-                    lines = ["【定期廣播（啟用中）】"]
-                    for r in broadcast_rows:
-                        next_run = str(r["next_run"])[:16] if r.get("next_run") else "未知"
-                        end_time = f" 至 {str(r['end_time'])[:16]}" if r.get("end_time") else ""
-                        lines.append(f"- 【{r['title']}】下次發送：{next_run}{end_time}")
-                        lines.append(f"  內容：{str(r['content'])[:80]}")
-                    context_parts.append("\n".join(lines))
+            if scheduled_ann_rows:
+                lines = ["【排程公告（即將發出）】"]
+                for r in scheduled_ann_rows:
+                    send_at = str(r["send_at"])[:16]
+                    title   = f"【{r['title']}】" if r.get("title") else ""
+                    lines.append(f"- {send_at} {title}{str(r['content'])[:80]}")
+                context_parts.append("\n".join(lines))
 
-                if scheduled_ann_rows:
-                    lines = ["【排程公告（即將發出）】"]
-                    for r in scheduled_ann_rows:
-                        send_at = str(r["send_at"])[:16]
-                        title   = f"【{r['title']}】" if r.get("title") else ""
-                        lines.append(f"- {send_at} {title}{str(r['content'])[:80]}")
-                    context_parts.append("\n".join(lines))
+            if recent_ann_rows:
+                lines = ["【近期公告（過去7天已發出）】"]
+                for r in recent_ann_rows:
+                    sent_at = str(r["sent_at"])[:16]
+                    lines.append(f"- {sent_at} {str(r['content'])[:80]}")
+                context_parts.append("\n".join(lines))
 
-                if recent_ann_rows:
-                    lines = ["【近期公告（過去7天已發出）】"]
-                    for r in recent_ann_rows:
-                        sent_at = str(r["sent_at"])[:16]
-                        lines.append(f"- {sent_at} {str(r['content'])[:80]}")
-                    context_parts.append("\n".join(lines))
-
-                db_context = "\n\n".join(context_parts)
-                if db_context:
-                    db_context = (
-                        f"\n\n[📋 系統資料庫（真實資料，回答時必須以此為準，不可捏造）]\n"
-                        f"{db_context}\n"
-                    )
-
-                # ── 改法 B：意圖分類，明確告訴 Gemini 這題要做什麼 ──
-                _kw2 = _load_keywords()
-                _all_data_kw = (
-                    _kw2["kw_course"] + _kw2["kw_broadcast"] +
-                    _kw2["kw_meeting"] + _kw2["kw_recruitment"] + _kw2["kw_training"] +
-                    ["什麼", "幾號", "幾點", "哪裡", "在哪", "時間", "日期", "地點",
-                     "有什麼", "有沒有", "公告", "活動"]
-                )
-                _intent_course    = any(kw in clean_text for kw in _kw2["kw_course"] + _kw2["kw_meeting"] + _kw2["kw_recruitment"] + _kw2["kw_training"])
-                _intent_broadcast = any(kw in clean_text for kw in _kw2["kw_broadcast"])
-                is_data_query     = bool(db_context) and any(kw in clean_text for kw in _all_data_kw)
-
-                # 意圖標籤（給 Gemini 看的明確指令）
-                if _intent_course and _intent_broadcast:
-                    _intent_label = "課程查詢＋公告查詢"
-                    _intent_instruction = (
-                        "這是【課程 + 公告查詢】。"
-                        "先列出符合的課程（格式：📅 日期 時間 標題 / 地點），再列出相關公告。"
-                        "資料必須全部列出，不可省略。若某類找不到，直接說找不到。"
-                    )
-                elif _intent_course:
-                    _intent_label = "課程查詢"
-                    _intent_instruction = (
-                        "這是【課程查詢】。"
-                        "必須從「課程清單」中找出所有符合問題的項目，格式：📅 日期 時間 標題 / 地點。"
-                        "全部列出，不可省略、不可只說「有幾個活動」而不展開。"
-                        "若清單中找不到符合的，直接說沒有，不要捏造。"
-                    )
-                elif _intent_broadcast:
-                    _intent_label = "公告查詢"
-                    _intent_instruction = (
-                        "這是【公告查詢】。"
-                        "從「定期廣播」「排程公告」「近期公告」中找出相關內容，逐條列出。"
-                        "若找不到，直接說目前沒有公告。"
-                    )
-                else:
-                    _intent_label = "閒聊"
-                    _intent_instruction = (
-                        "這是【閒聊】。"
-                        "不需要引用任何資料，用麥可的個性自然回應。"
-                    )
-
-                # 判斷目前是餓感模式還是開朗模式
-                is_hungry_mode = (
-                    (6  <= current_hour <= 8)  or
-                    (11 <= current_hour <= 13) or
-                    (18 <= current_hour <= 20)
-                )
-                mode_instruction = (
-                    "收尾加餓感：「咕嚕…等一下吃什麼」/「好餓」/「先吃飯嗎」（只能在收尾）"
-                    if is_hungry_mode else
-                    "語助詞：咕嚕咕嚕～/咕哇～/咕嘟～/咕～/噗咕～，不提餓，保持開朗輕鬆"
+            db_context = "\n\n".join(context_parts)
+            if db_context:
+                db_context = (
+                    f"\n\n[📋 系統資料庫（真實資料，回答時必須以此為準，不可捏造）]\n"
+                    f"{db_context}\n"
                 )
 
-                if is_data_query:
-                    format_instruction = f"""意圖：{_intent_label}
+            # ── 改法 B：意圖分類，明確告訴 Gemini 這題要做什麼 ──
+            _kw2 = _load_keywords()
+            _all_data_kw = (
+                _kw2["kw_course"] + _kw2["kw_broadcast"] +
+                _kw2["kw_meeting"] + _kw2["kw_recruitment"] + _kw2["kw_training"] +
+                ["什麼", "幾號", "幾點", "哪裡", "在哪", "時間", "日期", "地點",
+                 "有什麼", "有沒有", "公告", "活動"]
+            )
+            _intent_course    = any(kw in clean_text for kw in _kw2["kw_course"] + _kw2["kw_meeting"] + _kw2["kw_recruitment"] + _kw2["kw_training"])
+            _intent_broadcast = any(kw in clean_text for kw in _kw2["kw_broadcast"])
+            is_data_query     = bool(db_context) and any(kw in clean_text for kw in _all_data_kw)
+
+            # 意圖標籤（給 Gemini 看的明確指令）
+            if _intent_course and _intent_broadcast:
+                _intent_label = "課程查詢＋公告查詢"
+                _intent_instruction = (
+                    "這是【課程 + 公告查詢】。"
+                    "先列出符合的課程（格式：📅 日期 時間 標題 / 地點），再列出相關公告。"
+                    "資料必須全部列出，不可省略。若某類找不到，直接說找不到。"
+                )
+            elif _intent_course:
+                _intent_label = "課程查詢"
+                _intent_instruction = (
+                    "這是【課程查詢】。"
+                    "必須從「課程清單」中找出所有符合問題的項目，格式：📅 日期 時間 標題 / 地點。"
+                    "全部列出，不可省略、不可只說「有幾個活動」而不展開。"
+                    "若清單中找不到符合的，直接說沒有，不要捏造。"
+                )
+            elif _intent_broadcast:
+                _intent_label = "公告查詢"
+                _intent_instruction = (
+                    "這是【公告查詢】。"
+                    "從「定期廣播」「排程公告」「近期公告」中找出相關內容，逐條列出。"
+                    "若找不到，直接說目前沒有公告。"
+                )
+            else:
+                _intent_label = "閒聊"
+                _intent_instruction = (
+                    "這是【閒聊】。"
+                    "不需要引用任何資料，用麥可的個性自然回應。"
+                )
+
+            # 判斷目前是餓感模式還是開朗模式
+            is_hungry_mode = (
+                (6  <= current_hour <= 8)  or
+                (11 <= current_hour <= 13) or
+                (18 <= current_hour <= 20)
+            )
+            mode_instruction = (
+                "收尾加餓感：「咕嚕…等一下吃什麼」/「好餓」/「先吃飯嗎」（只能在收尾）"
+                if is_hungry_mode else
+                "語助詞：咕嚕咕嚕～/咕哇～/咕嘟～/咕～/噗咕～，不提餓，保持開朗輕鬆"
+            )
+
+            if is_data_query:
+                format_instruction = f"""意圖：{_intent_label}
 指令：{_intent_instruction}
 
 格式：輸出兩段，中間用 ---SPLIT--- 分隔。
 第一段：麥可語氣開頭 → 逐條列出資料（📅/📢 格式）→ 帶溫度的收尾。若有連結請接在對應條目後面。
 第二段：一句輕鬆補充或追問（麥可日常感），不重複第一段資料。"""
-                    temperature_val = 0.3
-                    max_tok = 700
-                else:
-                    format_instruction = f"""意圖：{_intent_label}
+                temperature_val = 0.3
+                max_tok = 700
+            else:
+                format_instruction = f"""意圖：{_intent_label}
 指令：{_intent_instruction}
 
 格式：輸出兩段，中間用 ---SPLIT--- 分隔。
 第一段：主回覆（麥可語助詞＋主體1~2句＋收尾），輕鬆有個性。
 第二段：延伸一句（反問、發呆聯想、或麥可小日常），不重複第一段。"""
-                    temperature_val = 0.8
-                    max_tok = 420
+                temperature_val = 0.8
+                max_tok = 420
 
-                # ── 從 DB 讀取人設（帶快取，後台改完 60 秒內生效）──
-                _p = get_persona(bot_key)
-                _name         = _p.get("name", "麥可（Michael）").strip()
-                _background   = _p.get("background", "").strip()
-                _personality  = _p.get("personality", "").strip()
-                _restrictions = _p.get("restrictions", "").strip()
-                _extra_notes  = _p.get("extra_notes", "").strip()
-                # 個性：每行加 "- " 前綴
-                _personality_lines = "\n".join(
-                    f"- {l.strip()}" for l in _personality.splitlines() if l.strip()
-                ) if _personality else "- 懶散但可靠，真的被問到事情就認真給答案"
-                _restrictions_block = _restrictions or "不教學、不銷售、不說成功學、不說「很高興為您服務」這類話"
-                _extra_block = f"\n【補充說明】\n{_extra_notes}" if _extra_notes else ""
+            # ── 從 DB 讀取人設（帶快取，後台改完 60 秒內生效）──
+            _p = get_persona(bot_key)
+            _name         = _p.get("name", "麥可（Michael）").strip()
+            _background   = _p.get("background", "").strip()
+            _personality  = _p.get("personality", "").strip()
+            _restrictions = _p.get("restrictions", "").strip()
+            _extra_notes  = _p.get("extra_notes", "").strip()
+            # 個性：每行加 "- " 前綴
+            _personality_lines = "\n".join(
+                f"- {l.strip()}" for l in _personality.splitlines() if l.strip()
+            ) if _personality else "- 懶散但可靠，真的被問到事情就認真給答案"
+            _restrictions_block = _restrictions or "不教學、不銷售、不說成功學、不說「很高興為您服務」這類話"
+            _extra_block = f"\n【補充說明】\n{_extra_notes}" if _extra_notes else ""
 
-                IPAPA_PERSONA = f"""你是{_name}。
+            IPAPA_PERSONA = f"""你是{_name}。
 
 【你的背景】
 {_background}
@@ -2937,58 +2940,64 @@ def handle_text(event, bot_key: str = ""):
 
 用繁體中文，短句，有節奏感，像一隻真實的角色在說話。"""
 
-                # ── 讀取此用戶在此群組的對話記憶 ──
-                memory = get_chat_memory(user_id, gid, limit=4)
-                memory_text = ""
-                if memory:
-                    lines = ["[這位用戶最近的對話記憶，可參考但不強制延續]"]
-                    for m in memory:
-                        role_label = "用戶" if m["role"] == "user" else "羊駝"
-                        lines.append(f"{role_label}：{m['content'][:120]}")  # 限制單則長度
-                    memory_text = "\n" + "\n".join(lines) + "\n"
+            # ── 讀取此用戶在此群組的對話記憶 ──
+            memory = get_chat_memory(user_id, gid, limit=4)
+            memory_text = ""
+            if memory:
+                lines = ["[這位用戶最近的對話記憶，可參考但不強制延續]"]
+                for m in memory:
+                    role_label = "用戶" if m["role"] == "user" else "羊駝"
+                    lines.append(f"{role_label}：{m['content'][:120]}")  # 限制單則長度
+                memory_text = "\n" + "\n".join(lines) + "\n"
 
-                raw = gemini_call(
-                    f"{IPAPA_PERSONA}{db_context}{memory_text}\n現在：{today} {now.strftime('%H:%M')}（台灣時間）\n使用者問：{clean_text}",
-                    max_tokens=max_tok,
-                    temperature=temperature_val,
-                )
+            raw = gemini_call(
+                f"{IPAPA_PERSONA}{db_context}{memory_text}\n現在：{today} {now.strftime('%H:%M')}（台灣時間）\n使用者問：{clean_text}",
+                max_tokens=max_tok,
+                temperature=temperature_val,
+            )
 
-                # 切分兩段訊息
-                parts = raw.split("---SPLIT---", 1)
-                msg1 = parts[0].strip()
-                msg2 = parts[1].strip() if len(parts) > 1 else ""
+            # 切分兩段訊息
+            parts = raw.split("---SPLIT---", 1)
+            msg1 = parts[0].strip()
+            msg2 = parts[1].strip() if len(parts) > 1 else ""
 
-                # ── 儲存這輪對話到記憶 & 完整紀錄 ──
-                assistant_record = msg1 + ("\n" + msg2 if msg2 else "")
-                save_chat_memory(user_id, gid, clean_text, assistant_record)
-                # 寫入完整對話紀錄（不自動刪除）
-                try:
-                    _lconn = get_db(); _lcur = _lconn.cursor()
+            # ── 儲存這輪對話到記憶 & 完整紀錄 ──
+            assistant_record = msg1 + ("\n" + msg2 if msg2 else "")
+            save_chat_memory(user_id, gid, clean_text, assistant_record)
+            # 寫入完整對話紀錄（不自動刪除）
+            try:
+                with db_conn() as _lconn:
+                    _lcur = _lconn.cursor()
                     _lcur.execute("""
                         INSERT INTO chat_logs (group_id, group_name, user_id, question, answer, created_at)
                         VALUES (%s, (SELECT group_name FROM groups WHERE group_id=%s), %s, %s, %s, %s)
                     """, (gid, gid, user_id, clean_text, assistant_record, isonow()))
-                    _lconn.commit(); _lcur.close(); _lconn.close()
-                except Exception as le:
-                    logger.warning(f"[ChatLog] write failed: {le}")
+                    _lconn.commit()
+            except Exception as le:
+                logger.warning(f"[ChatLog] write failed: {le}")
 
-            except Exception as e:
-                msg1 = "咕嚕…\n我剛才在想事情想太遠了\n稍後再問我一次\n咕…"
-                msg2 = ""
+        except Exception as e:
+            msg1 = "咕嚕…\n我剛才在想事情想太遠了\n稍後再問我一次\n咕…"
+            msg2 = ""
 
-            # 一次 reply 送出最多兩則訊息（完全免費，不消耗 push 額度）
-            headers = get_bot_headers(bot_key) if bot_key else HEADERS
-            messages = [{"type": "text", "text": msg1}]
-            if msg2:
-                messages.append({"type": "text", "text": msg2})
-            requests.post(
-                "https://api.line.me/v2/bot/message/reply",
-                headers=headers,
-                json={"replyToken": reply_token, "messages": messages},
-                timeout=10
-            )
-            return  # mention 處理完畢，不再走 Admin 指令邏輯
+        # 一次 reply 送出最多兩則訊息（完全免費，不消耗 push 額度）
+        headers = get_bot_headers(bot_key) if bot_key else HEADERS
+        messages = [{"type": "text", "text": msg1}]
+        if msg2:
+            messages.append({"type": "text", "text": msg2})
+        requests.post(
+            "https://api.line.me/v2/bot/message/reply",
+            headers=headers,
+            json={"replyToken": reply_token, "messages": messages},
+            timeout=10
+        )
+        return  # mention 處理完畢，不再走 Admin 指令邏輯
 
+
+def _handle_admin_cmd(
+    user_id: str, text: str, reply_token: str, bot_key: str
+) -> None:
+    """管理員文字指令（/公告、/新增課程、/課程清單 等）。"""
     if user_id not in ADMIN_USER_IDS:
         return
 
@@ -3008,8 +3017,8 @@ def handle_text(event, bot_key: str = ""):
                 ai_text = ai_text.split("```")[1]
                 if ai_text.startswith("json"): ai_text = ai_text[4:]
             c = json.loads(ai_text.strip())
-            conn = get_db(); cur = conn.cursor()
-            try:
+            with db_conn() as conn:
+                cur = conn.cursor()
                 cur.execute("""
                     INSERT INTO courses
                       (title,course_date,course_time,location,description,image_url,
@@ -3019,8 +3028,6 @@ def handle_text(event, bot_key: str = ""):
                       c.get("location",""),c.get("description",""),isonow()))
                 cid = cur.fetchone()["id"]
                 conn.commit()
-            finally:
-                cur.close(); conn.close()
             dates = generate_reminders(cid, c["course_date"], 30, "days", 7, "days")
             reply_message(reply_token,
                 f"✅ 課程已新增！\n📌 {c['title']}\n📅 {c['course_date']} {c.get('course_time','09:00')}\n"
@@ -3030,12 +3037,10 @@ def handle_text(event, bot_key: str = ""):
             reply_message(reply_token, f"❌ AI 解析失敗\n{str(e)[:80]}", bot_key=bot_key)
 
     elif text == "/課程清單":
-        conn = get_db(); cur = conn.cursor()
-        try:
+        with db_conn() as conn:
+            cur = conn.cursor()
             cur.execute("SELECT title, course_date::text FROM courses ORDER BY course_date ASC LIMIT 10")
             rows = cur.fetchall()
-        finally:
-            cur.close(); conn.close()
         if not rows:
             reply_message(reply_token, "目前沒有排程課程", bot_key=bot_key)
         else:
@@ -3054,6 +3059,32 @@ def handle_text(event, bot_key: str = ""):
             f"/群組清單 — 查看群組\n\n"
             f"🌐 管理後台：\n{url}/admin",
             bot_key=bot_key)
+
+
+
+def handle_text(event, bot_key: str = ""):
+    user_id     = event["source"].get("userId","")
+    reply_token = event["replyToken"]
+    msg_obj     = event["message"]
+    text        = msg_obj["text"].strip()
+
+    # ── 群組：確保 DB 有該群組記錄，並更新名稱 ──
+    if event["source"]["type"] == "group":
+        gid = event["source"]["groupId"]
+        _handle_group_upsert(gid, bot_key)
+
+        # ── 偵測觸發條件：@mention 或 quote reply ──
+        mentionees    = msg_obj.get("mention", {}).get("mentionees", [])
+        is_mentioned  = any(m.get("type") == "user" and m.get("isSelf") for m in mentionees)
+        is_quote_reply = bool(msg_obj.get("quotedMessageId"))
+
+        if is_mentioned or is_quote_reply:
+            _handle_mention_ai(event, msg_obj, user_id, reply_token, text, gid, bot_key)
+            return
+
+    # ── 管理員文字指令 ──
+    _handle_admin_cmd(user_id, text, reply_token, bot_key)
+
 
 def _get_chat_id_and_name(event, headers) -> tuple[str, str]:
     """從 join/leave event 取得 chat id 與名稱，支援 group 和 room（多人聊天室）"""
@@ -3078,13 +3109,14 @@ def handle_join(event, bot_key: str = ""):
     gid, group_name = _get_chat_id_and_name(event, headers)
     if not gid:
         return
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO groups (group_id, joined_at, group_name, bot_key)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (group_id) DO UPDATE SET group_name = EXCLUDED.group_name, bot_key = EXCLUDED.bot_key
-    """, (gid, isonow(), group_name, bot_key))
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO groups (group_id, joined_at, group_name, bot_key)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (group_id) DO UPDATE SET group_name = EXCLUDED.group_name, bot_key = EXCLUDED.bot_key
+        """, (gid, isonow(), group_name, bot_key))
+    conn.commit()
     logger.info(f"Chat joined: {gid} name={group_name!r} bot={bot_key!r}")
 
     # ── 自我介紹 ──
@@ -3127,9 +3159,10 @@ def handle_leave(event):
         gid = src["roomId"]
     else:
         return
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("UPDATE groups SET active=FALSE WHERE group_id=%s", (gid,))  # 軟刪除，保留歷史記錄
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE groups SET active=FALSE WHERE group_id=%s", (gid,))  # 軟刪除，保留歷史記錄
+    conn.commit()
     logger.info(f"Chat left: {gid} → active=FALSE")
 
 # ── 關鍵字管理 API ──
@@ -3164,10 +3197,10 @@ def save_keywords_api():
 def get_persona_api():
     if not check_admin(request): return jsonify({"error": "unauthorized"}), 401
     bot_key = request.args.get("bot_key", "main")
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT * FROM bot_persona WHERE bot_key=%s LIMIT 1", (bot_key,))
-    row = cur.fetchone()
-    cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM bot_persona WHERE bot_key=%s LIMIT 1", (bot_key,))
+        row = cur.fetchone()
     if row:
         return jsonify(dict(row))
     # 回傳預設空白人設供前端顯示
@@ -3191,18 +3224,19 @@ def save_persona_api():
     active       = bool(data.get("active", True))
     if not name:
         return jsonify({"error": "名稱不可為空"}), 400
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO bot_persona
-            (bot_key, name, background, personality, restrictions, greeting_words, extra_notes, active, updated_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-        ON CONFLICT (bot_key) DO UPDATE SET
-            name=EXCLUDED.name, background=EXCLUDED.background,
-            personality=EXCLUDED.personality, restrictions=EXCLUDED.restrictions,
-            greeting_words=EXCLUDED.greeting_words, extra_notes=EXCLUDED.extra_notes,
-            active=EXCLUDED.active, updated_at=EXCLUDED.updated_at
-    """, (bot_key, name, background, personality, restrictions, greeting_words, extra_notes, active, isonow()))
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO bot_persona
+                (bot_key, name, background, personality, restrictions, greeting_words, extra_notes, active, updated_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (bot_key) DO UPDATE SET
+                name=EXCLUDED.name, background=EXCLUDED.background,
+                personality=EXCLUDED.personality, restrictions=EXCLUDED.restrictions,
+                greeting_words=EXCLUDED.greeting_words, extra_notes=EXCLUDED.extra_notes,
+                active=EXCLUDED.active, updated_at=EXCLUDED.updated_at
+        """, (bot_key, name, background, personality, restrictions, greeting_words, extra_notes, active, isonow()))
+    conn.commit()
     invalidate_persona_cache(bot_key)   # 立即清快取
     logger.info(f"[Persona] bot_key={bot_key} updated")
     return jsonify({"ok": True})
@@ -3212,14 +3246,14 @@ def save_persona_api():
 @app.route("/admin/quick-reply-buttons", methods=["GET"])
 def get_quick_reply_buttons():
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("""
-        SELECT id, label, btn_type, tags, sort_order, active, created_at
-        FROM quick_reply_buttons
-        ORDER BY sort_order ASC, id ASC
-    """)
-    rows = [dict(r) for r in cur.fetchall()]
-    cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, label, btn_type, tags, sort_order, active, created_at
+            FROM quick_reply_buttons
+            ORDER BY sort_order ASC, id ASC
+        """)
+        rows = [dict(r) for r in cur.fetchall()]
     for r in rows:
         if r.get("created_at"): r["created_at"] = str(r["created_at"])
     return jsonify({"buttons": rows})
@@ -3237,13 +3271,14 @@ def add_quick_reply_button():
         return jsonify({"ok":False,"error":"請填寫按鈕名稱"})
     if btn_type not in ("tag","all_courses","announcement"):
         return jsonify({"ok":False,"error":"btn_type 無效"})
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO quick_reply_buttons (label,btn_type,tags,sort_order,active,created_at)
-        VALUES (%s,%s,%s,%s,%s,%s) RETURNING id
-    """, (label, btn_type, tags, sort_order, active, isonow()))
-    new_id = cur.fetchone()["id"]
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO quick_reply_buttons (label,btn_type,tags,sort_order,active,created_at)
+            VALUES (%s,%s,%s,%s,%s,%s) RETURNING id
+        """, (label, btn_type, tags, sort_order, active, isonow()))
+        new_id = cur.fetchone()["id"]
+    conn.commit()
     return jsonify({"ok":True,"id":new_id})
 
 @app.route("/admin/quick-reply-buttons/<int:bid>", methods=["PUT"])
@@ -3257,21 +3292,23 @@ def update_quick_reply_button(bid):
     active   = bool(d.get("active", True))
     if not label:
         return jsonify({"ok":False,"error":"請填寫按鈕名稱"})
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("""
-        UPDATE quick_reply_buttons
-        SET label=%s, btn_type=%s, tags=%s, sort_order=%s, active=%s
-        WHERE id=%s
-    """, (label, btn_type, tags, sort_order, active, bid))
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE quick_reply_buttons
+            SET label=%s, btn_type=%s, tags=%s, sort_order=%s, active=%s
+            WHERE id=%s
+        """, (label, btn_type, tags, sort_order, active, bid))
+    conn.commit()
     return jsonify({"ok":True})
 
 @app.route("/admin/quick-reply-buttons/<int:bid>", methods=["DELETE"])
 def delete_quick_reply_button(bid):
     if not check_admin(request): return jsonify({"error":"unauthorized"}), 401
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("DELETE FROM quick_reply_buttons WHERE id=%s", (bid,))
-    conn.commit(); cur.close(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM quick_reply_buttons WHERE id=%s", (bid,))
+    conn.commit()
     return jsonify({"ok":True})
 
 def _process_events(events: list, bot_key: str):
@@ -3290,12 +3327,32 @@ def _process_events(events: list, bot_key: str):
         except Exception as e:
             logger.error(f"Event handler error (type={t}): {e}")
 
+# 每個 IP 每分鐘最多記 10 次簽名失敗（避免 log 爆炸，但還是記下來）
+_sig_fail_counter: dict[str, list] = {}
+_sig_fail_lock = threading.Lock()
+
+def _log_signature_failure(ip: str) -> None:
+    """記錄簽名驗證失敗，並限制同一 IP 的 log 頻率（每分鐘最多 10 筆）。"""
+    now_ts = time.time()
+    with _sig_fail_lock:
+        times = _sig_fail_counter.setdefault(ip, [])
+        # 清掉 60 秒前的舊紀錄
+        _sig_fail_counter[ip] = [t for t in times if now_ts - t < 60]
+        if len(_sig_fail_counter[ip]) < 10:
+            _sig_fail_counter[ip].append(now_ts)
+            logger.warning(
+                f"[Webhook] Signature verification FAILED | "
+                f"ip={ip} | fail_count_60s={len(_sig_fail_counter[ip])}"
+            )
+        # 超過 10 次就靜默（已有前幾筆 log 足夠告警）
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     sig = request.headers.get("X-Line-Signature","")
     body = request.get_data()
     bot_key = find_bot_by_signature(body, sig)
     if not bot_key:
+        _log_signature_failure(request.remote_addr or "unknown")
         abort(400)
 
     events = json.loads(body).get("events", [])
@@ -3326,10 +3383,10 @@ def handle_postback(event, bot_key: str = ""):
 
     # 從 DB 取按鈕設定
     try:
-        conn = get_db(); cur = conn.cursor()
-        cur.execute("SELECT id, label, btn_type, tags FROM quick_reply_buttons WHERE id=%s AND active=TRUE", (btn_id,))
-        btn = cur.fetchone()
-        cur.close(); conn.close()
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id, label, btn_type, tags FROM quick_reply_buttons WHERE id=%s AND active=TRUE", (btn_id,))
+            btn = cur.fetchone()
     except Exception as e:
         logger.error(f"[Postback] DB fetch button error: {e}")
         return
@@ -3355,92 +3412,93 @@ def handle_postback(event, bot_key: str = ""):
     try:
         now   = now_tw()
         today = now.date().isoformat()
-        conn  = get_db(); cur = conn.cursor()
-        reply_lines = []
+        with db_conn() as conn:
+            cur = conn.cursor()
+            reply_lines = []
 
-        if btn_type == "announcement":
-            # ── 公告查詢 ──
-            cur.execute("""
-                SELECT title, content, next_run FROM scheduled_broadcasts
-                WHERE active = TRUE ORDER BY next_run ASC LIMIT 5
-            """)
-            rows = cur.fetchall()
-            if rows:
-                reply_lines.append("嗚咕～\n最新公告在這\n")
-                for r in rows:
-                    next_run = str(r["next_run"])[:16] if r.get("next_run") else ""
-                    reply_lines.append(f"📢 {r['title']}")
-                    reply_lines.append(f"   {str(r['content'])[:60]}")
-                    if next_run:
-                        reply_lines.append(f"   🕐 {next_run}")
-                reply_lines.append("\n咕嘟～")
+            if btn_type == "announcement":
+                # ── 公告查詢 ──
+                cur.execute("""
+                    SELECT title, content, next_run FROM scheduled_broadcasts
+                    WHERE active = TRUE ORDER BY next_run ASC LIMIT 5
+                """)
+                rows = cur.fetchall()
+                if rows:
+                    reply_lines.append("嗚咕～\n最新公告在這\n")
+                    for r in rows:
+                        next_run = str(r["next_run"])[:16] if r.get("next_run") else ""
+                        reply_lines.append(f"📢 {r['title']}")
+                        reply_lines.append(f"   {str(r['content'])[:60]}")
+                        if next_run:
+                            reply_lines.append(f"   🕐 {next_run}")
+                    reply_lines.append("\n咕嘟～")
+                else:
+                    reply_lines.append("咕嚕～\n目前沒有公告\n咕…")
+
+            elif btn_type == "all_courses":
+                # ── 所有近期課程 ──
+                cur.execute("""
+                    SELECT c.title, c.course_date::text, c.course_time,
+                           c.location, c.description, cat.name AS category
+                    FROM courses c
+                    LEFT JOIN categories cat ON c.category_id = cat.id
+                    WHERE c.course_date >= %s
+                    ORDER BY c.course_date ASC LIMIT 8
+                """, (today,))
+                rows = cur.fetchall()
+                if rows:
+                    reply_lines.append("咕嚕咕嚕～\n近期的行程我整理一下\n")
+                    for r in rows:
+                        cat  = f"[{r['category']}] " if r.get("category") else ""
+                        loc  = f"\n   📍 {r['location']}" if r.get("location") else ""
+                        desc = r.get("description", "")
+                        links = re.findall(r'https?://\S+', desc)
+                        link_line = ("\n   🔗 " + "\n   🔗 ".join(links[:2])) if links else ""
+                        reply_lines.append(f"📅 {r['course_date']} {r['course_time']} {cat}{r['title']}{loc}{link_line}")
+                    reply_lines.append("\n咕嘟～這幾場都記好哦")
+                else:
+                    reply_lines.append("咕嚕～\n近期好像沒有排課\n咕…")
+
+            elif btn_type == "tag" and tags:
+                # ── 標籤查詢 ──
+                like_clauses = " OR ".join(["c.title ILIKE %s OR c.description ILIKE %s"] * len(tags))
+                like_params  = [p for t in tags for p in (f"%{t}%", f"%{t}%")]
+                cur.execute(f"""
+                    SELECT c.title, c.course_date::text, c.course_time,
+                           c.location, c.description, cat.name AS category
+                    FROM courses c
+                    LEFT JOIN categories cat ON c.category_id = cat.id
+                    WHERE c.course_date >= %s AND ({like_clauses})
+                    ORDER BY c.course_date ASC LIMIT 8
+                """, (today, *like_params))
+                rows = cur.fetchall()
+                if rows:
+                    reply_lines.append(f"咕嚕咕嚕～\n我查了一下「{label}」相關的\n")
+                    for r in rows:
+                        cat  = f"[{r['category']}] " if r.get("category") else ""
+                        loc  = f"\n   📍 {r['location']}" if r.get("location") else ""
+                        desc = r.get("description", "")
+                        links = re.findall(r'https?://\S+', desc)
+                        link_line = ("\n   🔗 " + "\n   🔗 ".join(links[:2])) if links else (f"\n   💬 {desc.strip()[:80]}" if desc.strip() else "")
+                        reply_lines.append(f"📅 {r['course_date']} {r['course_time']} {cat}{r['title']}{loc}{link_line}")
+                    reply_lines.append("\n咕嘟～這幾場記好哦")
+                else:
+                    reply_lines.append(f"咕嚕～\n「{label}」近期好像沒有排\n咕…")
             else:
-                reply_lines.append("咕嚕～\n目前沒有公告\n咕…")
+                reply_lines.append("咕嚕～\n查了一下沒找到相關資料\n咕…")
 
-        elif btn_type == "all_courses":
-            # ── 所有近期課程 ──
-            cur.execute("""
-                SELECT c.title, c.course_date::text, c.course_time,
-                       c.location, c.description, cat.name AS category
-                FROM courses c
-                LEFT JOIN categories cat ON c.category_id = cat.id
-                WHERE c.course_date >= %s
-                ORDER BY c.course_date ASC LIMIT 8
-            """, (today,))
-            rows = cur.fetchall()
-            if rows:
-                reply_lines.append("咕嚕咕嚕～\n近期的行程我整理一下\n")
-                for r in rows:
-                    cat  = f"[{r['category']}] " if r.get("category") else ""
-                    loc  = f"\n   📍 {r['location']}" if r.get("location") else ""
-                    desc = r.get("description", "")
-                    links = re.findall(r'https?://\S+', desc)
-                    link_line = ("\n   🔗 " + "\n   🔗 ".join(links[:2])) if links else ""
-                    reply_lines.append(f"📅 {r['course_date']} {r['course_time']} {cat}{r['title']}{loc}{link_line}")
-                reply_lines.append("\n咕嘟～這幾場都記好哦")
-            else:
-                reply_lines.append("咕嚕～\n近期好像沒有排課\n咕…")
-
-        elif btn_type == "tag" and tags:
-            # ── 標籤查詢 ──
-            like_clauses = " OR ".join(["c.title ILIKE %s OR c.description ILIKE %s"] * len(tags))
-            like_params  = [p for t in tags for p in (f"%{t}%", f"%{t}%")]
-            cur.execute(f"""
-                SELECT c.title, c.course_date::text, c.course_time,
-                       c.location, c.description, cat.name AS category
-                FROM courses c
-                LEFT JOIN categories cat ON c.category_id = cat.id
-                WHERE c.course_date >= %s AND ({like_clauses})
-                ORDER BY c.course_date ASC LIMIT 8
-            """, (today, *like_params))
-            rows = cur.fetchall()
-            if rows:
-                reply_lines.append(f"咕嚕咕嚕～\n我查了一下「{label}」相關的\n")
-                for r in rows:
-                    cat  = f"[{r['category']}] " if r.get("category") else ""
-                    loc  = f"\n   📍 {r['location']}" if r.get("location") else ""
-                    desc = r.get("description", "")
-                    links = re.findall(r'https?://\S+', desc)
-                    link_line = ("\n   🔗 " + "\n   🔗 ".join(links[:2])) if links else (f"\n   💬 {desc.strip()[:80]}" if desc.strip() else "")
-                    reply_lines.append(f"📅 {r['course_date']} {r['course_time']} {cat}{r['title']}{loc}{link_line}")
-                reply_lines.append("\n咕嘟～這幾場記好哦")
-            else:
-                reply_lines.append(f"咕嚕～\n「{label}」近期好像沒有排\n咕…")
-        else:
-            reply_lines.append("咕嚕～\n查了一下沒找到相關資料\n咕…")
-
-        cur.close(); conn.close()
         msg = "\n".join(reply_lines)
         reply_with_postback_menu(reply_token, msg, bot_key=bot_key)
 
         # 寫入 chat_logs
         try:
-            lconn = get_db(); lcur = lconn.cursor()
-            lcur.execute("""
-                INSERT INTO chat_logs (group_id, group_name, user_id, question, answer, created_at)
-                VALUES (%s, (SELECT group_name FROM groups WHERE group_id=%s), %s, %s, %s, %s)
-            """, (gid, gid, user_id, f"[qr] {label}", msg, isonow()))
-            lconn.commit(); lcur.close(); lconn.close()
+            with db_conn() as lconn:
+                lcur = lconn.cursor()
+                lcur.execute("""
+                    INSERT INTO chat_logs (group_id, group_name, user_id, question, answer, created_at)
+                    VALUES (%s, (SELECT group_name FROM groups WHERE group_id=%s), %s, %s, %s, %s)
+                """, (gid, gid, user_id, f"[qr] {label}", msg, isonow()))
+                lconn.commit()
         except Exception as le:
             logger.warning(f"[Postback/ChatLog] write failed: {le}")
 
