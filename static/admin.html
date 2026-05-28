@@ -1055,7 +1055,7 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.55; }
         <div class="card">
           <div class="card-head"><span class="card-title"><i class="ti ti-vocabulary"></i> 關鍵字設定</span></div>
           <p style="font-size:12px;color:var(--ink-3);margin-bottom:4px">機器人收到訊息時，先比對關鍵字決定要查什麼；命中才查資料庫，<strong>不消耗 AI token</strong>。修改後約 2 分鐘內生效。</p>
-          <p style="font-size:12px;color:var(--ink-4);margin-bottom:20px">每格填入關鍵字，<strong>逗號分隔</strong>。空白會自動忽略。</p>
+          <p style="font-size:12px;color:var(--ink-4);margin-bottom:20px">每格填入關鍵字，<strong>逗號分隔</strong>。空白會自動忽略。<strong>自訂回覆內容</strong>若有填寫，命中時會顯示在查詢結果<em>前面</em>（例：補充說明、聯絡方式）。</p>
 
           <div style="display:flex;flex-direction:column;gap:16px">
 
@@ -1066,6 +1066,11 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.55; }
                 <span style="font-size:11px;color:var(--ink-4)">（命中 → 查課程清單）</span>
               </label>
               <textarea id="kw-kw_course" rows="3" style="font-size:13px;font-family:monospace"></textarea>
+              <label style="display:flex;align-items:center;gap:6px;margin-top:8px">
+                <span style="font-size:11px;color:var(--ink-3);font-weight:600">📝 自訂回覆內容</span>
+                <span style="font-size:11px;color:var(--ink-4)">（選填，命中時顯示在課程清單上方）</span>
+              </label>
+              <textarea id="kw-kw_content_course" rows="2" placeholder="例：如需報名請洽 LINE 客服 @ipapa" style="font-size:13px;background:var(--bg-2);border-style:dashed"></textarea>
             </div>
 
             <div class="fg">
@@ -1075,17 +1080,27 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.55; }
                 <span style="font-size:11px;color:var(--ink-4)">（命中 → 查廣播/公告）</span>
               </label>
               <textarea id="kw-kw_broadcast" rows="2" style="font-size:13px;font-family:monospace"></textarea>
+              <label style="display:flex;align-items:center;gap:6px;margin-top:8px">
+                <span style="font-size:11px;color:var(--ink-3);font-weight:600">📝 自訂回覆內容</span>
+                <span style="font-size:11px;color:var(--ink-4)">（選填，命中時顯示在公告清單上方）</span>
+              </label>
+              <textarea id="kw-kw_content_broadcast" rows="2" placeholder="例：官網最新消息：https://ipapa.com/news" style="font-size:13px;background:var(--bg-2);border-style:dashed"></textarea>
             </div>
 
             <div style="background:var(--bg-2);border-radius:var(--radius);padding:16px">
               <div style="font-size:12px;font-weight:600;color:var(--ink-3);margin-bottom:12px">精確活動類型（命中時額外篩選標題/描述）</div>
-              <div style="display:flex;flex-direction:column;gap:12px">
+              <div style="display:flex;flex-direction:column;gap:16px">
                 <div class="fg">
                   <label style="display:flex;align-items:center;gap:6px">
                     <span style="background:#E65100;color:#fff;font-size:11px;padding:2px 8px;border-radius:20px">會議</span>
                     會議相關關鍵字
                   </label>
                   <input id="kw-kw_meeting" type="text" style="font-size:13px;font-family:monospace">
+                  <label style="display:flex;align-items:center;gap:6px;margin-top:8px">
+                    <span style="font-size:11px;color:var(--ink-3);font-weight:600">📝 自訂回覆內容</span>
+                    <span style="font-size:11px;color:var(--ink-4)">（選填）</span>
+                  </label>
+                  <textarea id="kw-kw_content_meeting" rows="2" placeholder="例：線上會議連結請見公告，或洽行政確認" style="font-size:13px;background:var(--surface);border-style:dashed"></textarea>
                 </div>
                 <div class="fg">
                   <label style="display:flex;align-items:center;gap:6px">
@@ -1093,6 +1108,11 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.55; }
                     招商相關關鍵字
                   </label>
                   <input id="kw-kw_recruitment" type="text" style="font-size:13px;font-family:monospace">
+                  <label style="display:flex;align-items:center;gap:6px;margin-top:8px">
+                    <span style="font-size:11px;color:var(--ink-3);font-weight:600">📝 自訂回覆內容</span>
+                    <span style="font-size:11px;color:var(--ink-4)">（選填）</span>
+                  </label>
+                  <textarea id="kw-kw_content_recruitment" rows="2" placeholder="例：招商說明會報名連結：https://..." style="font-size:13px;background:var(--surface);border-style:dashed"></textarea>
                 </div>
                 <div class="fg">
                   <label style="display:flex;align-items:center;gap:6px">
@@ -1100,6 +1120,11 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.55; }
                     內訓/培訓相關關鍵字
                   </label>
                   <input id="kw-kw_training" type="text" style="font-size:13px;font-family:monospace">
+                  <label style="display:flex;align-items:center;gap:6px;margin-top:8px">
+                    <span style="font-size:11px;color:var(--ink-3);font-weight:600">📝 自訂回覆內容</span>
+                    <span style="font-size:11px;color:var(--ink-4)">（選填）</span>
+                  </label>
+                  <textarea id="kw-kw_content_training" rows="2" placeholder="例：教練認證課程報名請找系統人員" style="font-size:13px;background:var(--surface);border-style:dashed"></textarea>
                 </div>
               </div>
             </div>
@@ -3260,20 +3285,30 @@ document.getElementById('qr-modal').addEventListener('click', function(e){
 // ── 關鍵字設定 ──
 async function loadKeywords(){
   const res = await api('/admin/keywords');
-  const fields = ['kw_course','kw_broadcast','kw_meeting','kw_recruitment','kw_training'];
-  fields.forEach(key => {
+  const kwFields = ['kw_course','kw_broadcast','kw_meeting','kw_recruitment','kw_training'];
+  kwFields.forEach(key => {
     const el = document.getElementById('kw-' + key);
     if(el) el.value = (res[key] || '').replace(/,/g, ', ');
+  });
+  const contentFields = ['kw_content_course','kw_content_broadcast','kw_content_meeting','kw_content_recruitment','kw_content_training'];
+  contentFields.forEach(key => {
+    const el = document.getElementById('kw-' + key);
+    if(el) el.value = res[key] || '';
   });
   document.getElementById('kw-save-msg').style.display = 'none';
 }
 
 async function saveKeywords(){
-  const fields = ['kw_course','kw_broadcast','kw_meeting','kw_recruitment','kw_training'];
+  const kwFields = ['kw_course','kw_broadcast','kw_meeting','kw_recruitment','kw_training'];
+  const contentFields = ['kw_content_course','kw_content_broadcast','kw_content_meeting','kw_content_recruitment','kw_content_training'];
   const payload = {};
-  fields.forEach(key => {
+  kwFields.forEach(key => {
     const el = document.getElementById('kw-' + key);
     if(el) payload[key] = el.value;
+  });
+  contentFields.forEach(key => {
+    const el = document.getElementById('kw-' + key);
+    if(el) payload[key] = el.value.trim();
   });
   const res = await api('/admin/keywords', 'POST', payload);
   if(res.ok){
